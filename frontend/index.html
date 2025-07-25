@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Hash Timestamping</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>File Hash Timestamping</h1>
+        
+        <div class="upload-section">
+            <h2>Upload File</h2>
+            <div class="file-input-container">
+                <input type="file" id="fileInput" accept="*/*">
+                <label for="fileInput" class="file-input-label">
+                    <span class="file-input-text">Choose a file or drag it here</span>
+                </label>
+            </div>
+            
+            <div class="file-info" id="fileInfo" style="display: none;">
+                <p><strong>Selected file:</strong> <span id="fileName"></span></p>
+                <p><strong>Size:</strong> <span id="fileSize"></span></p>
+                <p><strong>Hash (SHA-512):</strong> <span id="fileHash" class="hash-display"></span></p>
+            </div>
+            
+            <div class="actions">
+                <button id="addHashBtn" class="btn btn-primary" disabled>Add Hash to Store</button>
+                <button id="checkHashBtn" class="btn btn-secondary" disabled>Check if Hash Exists</button>
+            </div>
+        </div>
+        
+        <div class="results-section">
+            <h2>Results</h2>
+            <div id="results" class="results-container"></div>
+        </div>
+        
+        <div class="manual-hash-section">
+            <h2>Manual Hash Check</h2>
+            <div class="hash-input-container">
+                <input type="text" id="manualHashInput" placeholder="Enter 128-character hex hash" maxlength="128">
+                <button id="checkManualHashBtn" class="btn btn-secondary">Check Hash</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="script.js"></script>
+</body>
+</html> 
