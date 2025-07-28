@@ -12,6 +12,11 @@ const checkHashBtn = document.getElementById('checkHashBtn');
 const results = document.getElementById('results');
 const manualHashInput = document.getElementById('manualHashInput');
 const checkManualHashBtn = document.getElementById('checkManualHashBtn');
+const refreshStatsBtn = document.getElementById('refreshStatsBtn');
+const totalHashes = document.getElementById('totalHashes');
+const occupiedSlots = document.getElementById('occupiedSlots');
+const totalSlots = document.getElementById('totalSlots');
+const loadFactor = document.getElementById('loadFactor');
 
 // Current file data
 let currentFile = null;
@@ -22,6 +27,7 @@ fileInput.addEventListener('change', handleFileSelect);
 addHashBtn.addEventListener('click', addHashToStore);
 checkHashBtn.addEventListener('click', checkHashExists);
 checkManualHashBtn.addEventListener('click', checkManualHash);
+refreshStatsBtn.addEventListener('click', refreshStats);
 
 // Drag and drop functionality
 const fileInputLabel = document.querySelector('.file-input-label');
@@ -142,6 +148,8 @@ async function addHashToStore() {
 
         if (response.ok && result.success) {
             addResult('success', 'Hash added successfully', result.message);
+            // Refresh stats after adding a hash
+            await refreshStats();
         } else {
             addResult('error', 'Failed to add hash', result.message);
         }
@@ -149,6 +157,37 @@ async function addHashToStore() {
         addResult('error', 'Network error', error.message);
     } finally {
         addHashBtn.disabled = false;
+    }
+}
+
+async function refreshStats() {
+    try {
+        refreshStatsBtn.disabled = true;
+        
+        const response = await fetch(`${API_BASE_URL}/stats`, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+
+        if (response.ok) {
+            const stats = await response.json();
+            
+            totalHashes.textContent = stats.count.toLocaleString();
+            occupiedSlots.textContent = stats.slots.toLocaleString();
+            totalSlots.textContent = stats.total_slots.toLocaleString();
+            
+            // Calculate load factor as percentage
+            const loadFactorPercent = ((stats.slots / stats.total_slots) * 100).toFixed(2);
+            loadFactor.textContent = `${loadFactorPercent}%`;
+        } else {
+            addResult('error', 'Failed to fetch stats', 'Could not retrieve store statistics');
+        }
+    } catch (error) {
+        addResult('error', 'Network error', error.message);
+    } finally {
+        refreshStatsBtn.disabled = false;
     }
 }
 
@@ -250,4 +289,5 @@ manualHashInput.addEventListener('keypress', (e) => {
 });
 
 // Initial setup
-addResult('info', 'Frontend ready', 'Upload a file or enter a hash to get started'); 
+addResult('info', 'Frontend ready', 'Upload a file or enter a hash to get started');
+refreshStats(); // Load initial stats 

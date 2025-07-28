@@ -1,7 +1,7 @@
 use axum::{
     extract::Json,
     http::{Method, StatusCode, header},
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -34,9 +34,21 @@ struct CheckHashResponse {
     exists: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct GetStatsResponse {
+    count: usize,
+    slots: usize,
+    total_slots: usize,
+}
+
+const INDEX_SIZE: usize = 16;
+const PREFIX_SIZE: usize = 0;
+
+
+
 #[tokio::main]
 async fn main() {
-    let hash_store = Arc::new(HashStore::<16, 0>::new());
+    let hash_store = Arc::new(HashStore::<INDEX_SIZE, PREFIX_SIZE>::new());
 
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
@@ -46,6 +58,7 @@ async fn main() {
     let app = Router::new()
         .route("/add", post(add))
         .route("/check", post(check))
+        .route("/stats", get(get_stats))
         .layer(cors)
         .with_state(hash_store);
 
@@ -93,7 +106,7 @@ mod tests {
 }
 
 async fn add(
-    axum::extract::State(hash_store): axum::extract::State<Arc<HashStore<16, 0>>>,
+    axum::extract::State(hash_store): axum::extract::State<Arc<HashStore<INDEX_SIZE, PREFIX_SIZE>>>,
     Json(payload): Json<AddHashRequest>,
 ) -> (StatusCode, Json<AddHashResponse>) {
     // Validate hash length (512 bits = 64 bytes = 128 hex characters)
@@ -131,7 +144,7 @@ async fn add(
 }
 
 async fn check(
-    axum::extract::State(hash_store): axum::extract::State<Arc<HashStore<16, 0>>>,
+    axum::extract::State(hash_store): axum::extract::State<Arc<HashStore<INDEX_SIZE, PREFIX_SIZE>>>,
     Json(payload): Json<CheckHashRequest>,
 ) -> (StatusCode, Json<CheckHashResponse>) {
     // Validate hash length (512 bits = 64 bytes = 128 hex characters)
@@ -173,4 +186,15 @@ async fn check(
             exists,
         }),
     )
+}
+
+async fn get_stats(
+    axum::extract::State(hash_store): axum::extract::State<Arc<HashStore<INDEX_SIZE, PREFIX_SIZE>>>,
+) -> (StatusCode, Json<GetStatsResponse>) {
+    let stats = GetStatsResponse {
+        count: hash_store.len(),
+        slots: hash_store.occupied_slots(),
+        total_slots: 1 << INDEX_SIZE,
+    };
+    (StatusCode::OK, Json(stats))
 }

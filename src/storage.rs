@@ -45,12 +45,28 @@ impl HashArray {
     pub fn get(&self, index: usize) -> Option<&Hash512> {
         self.data.get(index)
     }
+
+    // pub fn to_merkle_tree(&self, total_size: usize) -> MerkleTree<total_size> {
+    // }
 }
+
+pub struct MerkleTree<const TOTAL_SIZE: usize> {
+    data: [Hash512; TOTAL_SIZE],
+}
+
+// impl<const TOTAL_SIZE: usize> MerkleTree<TOTAL_SIZE> {
+//     pub fn new(data: HashArray) -> Self {
+//         Self {
+//             data: [Hash512::default(); TOTAL_SIZE],
+//         }
+//     }
+// }
 
 /// Main hash storage structure with configurable index and prefix sizes
 pub struct HashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> {
     data: Mutex<Vec<Option<Box<HashLL>>>>,
     num_elements: Mutex<usize>,
+    occupied_slots: Mutex<usize>,
 }
 
 impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PREFIX_SIZE> {
@@ -70,6 +86,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
         Self {
             data: Mutex::new(data),
             num_elements: Mutex::new(0),
+            occupied_slots: Mutex::new(0),
         }
     }
 
@@ -85,7 +102,12 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
         let mut new_node = new_node;
 
         // Move the existing list to the new node's next pointer
-        new_node.next = data[index].take();
+        let next = data[index].take();
+        if next.is_none() {
+            let mut occupied_slots = self.occupied_slots.lock().unwrap();
+            *occupied_slots += 1;
+        }
+        new_node.next = next;
 
         // Set the new node as the head of the list
         data[index] = Some(new_node);
@@ -98,6 +120,11 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
     /// Get the number of elements in the store
     pub fn len(&self) -> usize {
         *self.num_elements.lock().unwrap()
+    }
+
+    /// Get the number of occupied slots in the store
+    pub fn occupied_slots(&self) -> usize {
+        *self.occupied_slots.lock().unwrap()
     }
 
     /// Check if the store is empty

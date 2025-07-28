@@ -36,6 +36,29 @@
             <div id="results" class="results-container"></div>
         </div>
         
+        <div class="stats-section">
+            <h2>Store Statistics</h2>
+            <div class="stats-container">
+                <div class="stat-item">
+                    <div class="stat-label">Total Hashes</div>
+                    <div class="stat-value" id="totalHashes">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Occupied Slots</div>
+                    <div class="stat-value" id="occupiedSlots">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Total Slots</div>
+                    <div class="stat-value" id="totalSlots">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Load Factor</div>
+                    <div class="stat-value" id="loadFactor">-</div>
+                </div>
+            </div>
+            <button id="refreshStatsBtn" class="btn btn-secondary">Refresh Stats</button>
+        </div>
+        
         <div class="manual-hash-section">
             <h2>Manual Hash Check</h2>
             <div class="hash-input-container">
