@@ -1,0 +1,91 @@
+class HashStore<INDEX_SIZE, PREFIX_SIZE>:
+    data: [HashLL?; 2**INDEX_SIZE]
+    num_elements: int
+    buckets_filled: int
+
+    def init(self):
+        self.data[:] = None
+        self.num_elements = 0
+        self.buckets_filled = 0
+
+    def add_hash(self, hash: u512) -> bool:
+        '''add hash to store and return whether or not it was new'''
+        index = hash[PREFIX_SIZE:PREFIX_SIZE+INDEX_SIZE]
+        if self.data[index] is None:
+            # add hash to new bucket
+            self.data[index] = HashLL(hash)
+            self.buckets_filled += 1
+        else:
+            # add hash to linked list in existing bucket. Insert so that the list stays sorted.
+            tmp = self.data[index]
+            if hash < tmp.hash:
+                # insert at the front
+                self.data[index] = HashLL(hash, tmp)
+            else:
+                while tmp.next is not None and hash >= tmp.next.hash:
+                    tmp = tmp.next
+                if hash == tmp.next.hash: return False
+                tmp.next = HashLL(hash, tmp.next)
+        self.num_elements += 1
+        return True
+            
+
+    def to_array(self):
+        hash_array = HashArray<self.num_elements>()
+        i = 0
+        for d in self.data:
+            while d is not None:
+                hash_array.data[i] = d.hash
+                d = d.next
+                i += 1
+        return hash_array
+
+
+class HashLL:
+    '''Linked List of Hashes'''
+    hash: u512
+    next: HashLL?
+
+    def init(self, hash, next=None):
+        self.hash = hash
+        self.next = next
+
+
+class HashArray<N>:
+    data: [u512; N]
+
+    def to_merkle_tree(self) -> MerkleTree:
+        depth = N.log2().ceil()
+        tree = MerkleTree<depth>()
+        tree.data[:N] = self.data
+        base_idx = 2**depth
+        for level in 1..depth:
+            for i in 0..(2**(depth-level)):
+                idx = base_idx + i
+                parent_idx = base_idx - 2**(depth-level+1) + i*2
+                tree.data[idx] = hashlib.sha512(tree.data[parent_idx] ++ tree.data[parent_idx+1])
+            base_idx += 2**(depth-level)
+        return tree
+
+
+class MerkleTree<DEPTH>:
+    '''A balanced binary tree storing hashes where each parent is the hash of its children. Packed in an array.'''
+    data: [u512; 2**DEPTH * 2-1]
+
+    def init(self):
+        self.data[:] = 0
+
+    def get(self, hash: u512) -> list[tuple[u512,u512]]:
+        # try to find hash and return None if not found
+        idx_original = self.data[:2**DEPTH].binary_search(hash)
+        if idx_original is None: return None
+
+        # for the proof get list of combined hashes from leaves to root
+        proof = []
+        idx_base = 0
+        for level in 0..DEPTH:
+            idx = idx_base + ((idx_original >> (level+1)) << 1) # get index for current level (cut off last bit so that `(idx, idx+1)` corresponds to the next combined hashes)
+            proof.append((self.data[idx], self.data[idx+1]))
+            idx_base += 2**(DEPTH-level)
+        
+        return proof
