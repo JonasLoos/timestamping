@@ -3,12 +3,10 @@ const API_BASE_URL = 'http://127.0.0.1:3000';
 
 // DOM elements
 const fileInput = document.getElementById('fileInput');
-const fileInfo = document.getElementById('fileInfo');
-const fileName = document.getElementById('fileName');
-const fileSize = document.getElementById('fileSize');
-const fileHash = document.getElementById('fileHash');
-const addHashBtn = document.getElementById('addHashBtn');
-const checkHashBtn = document.getElementById('checkHashBtn');
+const filesInfo = document.getElementById('filesInfo');
+const filesList = document.getElementById('filesList');
+const addAllHashesBtn = document.getElementById('addAllHashesBtn');
+const checkAllHashesBtn = document.getElementById('checkAllHashesBtn');
 const results = document.getElementById('results');
 const manualHashInput = document.getElementById('manualHashInput');
 const checkManualHashBtn = document.getElementById('checkManualHashBtn');
@@ -18,14 +16,14 @@ const occupiedSlots = document.getElementById('occupiedSlots');
 const totalSlots = document.getElementById('totalSlots');
 const loadFactor = document.getElementById('loadFactor');
 
-// Current file data
-let currentFile = null;
-let currentHash = null;
+// Current files data
+let currentFiles = [];
+let fileHashes = new Map(); // Map of file name to hash
 
 // Event listeners
-fileInput.addEventListener('change', handleFileSelect);
-addHashBtn.addEventListener('click', addHashToStore);
-checkHashBtn.addEventListener('click', checkHashExists);
+fileInput.addEventListener('change', handleFilesSelect);
+addAllHashesBtn.addEventListener('click', addAllHashesToStore);
+checkAllHashesBtn.addEventListener('click', checkAllHashes);
 checkManualHashBtn.addEventListener('click', checkManualHash);
 refreshStatsBtn.addEventListener('click', refreshStats);
 
@@ -52,41 +50,76 @@ fileInputLabel.addEventListener('drop', (e) => {
     const files = e.dataTransfer.files;
     if (files.length > 0) {
         fileInput.files = files;
-        handleFileSelect();
+        handleFilesSelect();
     }
 });
 
-async function handleFileSelect() {
-    const file = fileInput.files[0];
-    if (!file) {
-        hideFileInfo();
+async function handleFilesSelect() {
+    const files = Array.from(fileInput.files);
+    if (files.length === 0) {
+        hideFilesInfo();
         return;
     }
 
-    currentFile = file;
-    showFileInfo(file);
+    currentFiles = files;
+    fileHashes.clear();
+    clearResults();
     
-    try {
-        currentHash = await calculateFileHash(file);
-        fileHash.textContent = currentHash;
+    showFilesInfo(files);
+    
+    // Calculate hashes for all files
+    for (const file of files) {
+        try {
+            const hash = await calculateFileHash(file);
+            fileHashes.set(file.name, hash);
+            updateFileHashDisplay(file.name, hash);
+        } catch (error) {
+            addResult('error', `Error calculating hash for ${file.name}`, error.message);
+        }
+    }
+    
+    if (fileHashes.size > 0) {
         enableButtons();
-    } catch (error) {
-        addResult('error', 'Error calculating hash', error.message);
-        hideFileInfo();
     }
 }
 
-function showFileInfo(file) {
-    fileName.textContent = file.name;
-    fileSize.textContent = formatFileSize(file.size);
-    fileInfo.style.display = 'block';
+function showFilesInfo(files) {
+    filesList.innerHTML = '';
+    
+    files.forEach(file => {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        fileItem.innerHTML = `
+            <div class="file-header">
+                <span class="file-name">${file.name}</span>
+                <span class="file-size">${formatFileSize(file.size)}</span>
+            </div>
+            <div class="file-hash" id="hash-${file.name}">
+                <span class="hash-label">Hash (SHA-512):</span>
+                <span class="hash-value">Calculating...</span>
+            </div>
+        `;
+        filesList.appendChild(fileItem);
+    });
+    
+    filesInfo.style.display = 'block';
 }
 
-function hideFileInfo() {
-    fileInfo.style.display = 'none';
-    currentFile = null;
-    currentHash = null;
+function updateFileHashDisplay(fileName, hash) {
+    const hashElement = document.getElementById(`hash-${fileName}`);
+    if (hashElement) {
+        const hashValue = hashElement.querySelector('.hash-value');
+        hashValue.textContent = hash;
+        hashValue.className = 'hash-value hash-display';
+    }
+}
+
+function hideFilesInfo() {
+    filesInfo.style.display = 'none';
+    currentFiles = [];
+    fileHashes.clear();
     disableButtons();
+    clearResults();
 }
 
 function formatFileSize(bytes) {
@@ -117,46 +150,121 @@ async function calculateFileHash(file) {
 }
 
 function enableButtons() {
-    addHashBtn.disabled = false;
-    checkHashBtn.disabled = false;
+    addAllHashesBtn.disabled = false;
+    checkAllHashesBtn.disabled = false;
 }
 
 function disableButtons() {
-    addHashBtn.disabled = true;
-    checkHashBtn.disabled = true;
+    addAllHashesBtn.disabled = true;
+    checkAllHashesBtn.disabled = true;
 }
 
-async function addHashToStore() {
-    if (!currentHash) {
-        addResult('error', 'No hash available', 'Please select a file first');
+function clearResults() {
+    results.innerHTML = '';
+}
+
+async function addAllHashesToStore() {
+    if (fileHashes.size === 0) {
+        addResult('error', 'No hashes available', 'Please select files first');
         return;
     }
 
     try {
-        addHashBtn.disabled = true;
-        addResult('info', 'Adding hash to store...', 'Please wait...');
+        addAllHashesBtn.disabled = true;
+        addResult('info', 'Adding hashes to store...', `Processing ${fileHashes.size} files...`);
 
-        const response = await fetch(`${API_BASE_URL}/add`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ hash: currentHash }),
-        });
+        const hashes = Array.from(fileHashes.values());
+        let successCount = 0;
+        let errorCount = 0;
 
-        const result = await response.json();
+        for (const [fileName, hash] of fileHashes) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/add`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ hash: hash }),
+                });
 
-        if (response.ok && result.success) {
-            addResult('success', 'Hash added successfully', result.message);
-            // Refresh stats after adding a hash
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    successCount++;
+                    addResult('success', `Hash added for ${fileName}`, 'Hash added successfully');
+                } else {
+                    errorCount++;
+                    addResult('error', `Failed to add hash for ${fileName}`, result.message);
+                }
+            } catch (error) {
+                errorCount++;
+                addResult('error', `Network error for ${fileName}`, error.message);
+            }
+        }
+
+        // Summary
+        if (successCount > 0) {
+            addResult('success', 'Upload Summary', 
+                `Successfully added ${successCount} hashes${errorCount > 0 ? `, ${errorCount} failed` : ''}`);
             await refreshStats();
-        } else {
-            addResult('error', 'Failed to add hash', result.message);
         }
     } catch (error) {
         addResult('error', 'Network error', error.message);
     } finally {
-        addHashBtn.disabled = false;
+        addAllHashesBtn.disabled = false;
+    }
+}
+
+async function checkAllHashes() {
+    if (fileHashes.size === 0) {
+        addResult('error', 'No hashes available', 'Please select files first');
+        return;
+    }
+
+    try {
+        checkAllHashesBtn.disabled = true;
+        addResult('info', 'Checking hashes...', `Checking ${fileHashes.size} files...`);
+
+        let foundCount = 0;
+        let notFoundCount = 0;
+
+        for (const [fileName, hash] of fileHashes) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/check`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ hash: hash }),
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    if (result.exists) {
+                        foundCount++;
+                        addResult('success', `Hash found for ${fileName}`, 'Hash exists in the store');
+                    } else {
+                        notFoundCount++;
+                        addResult('info', `Hash not found for ${fileName}`, 'Hash does not exist in the store');
+                    }
+                } else {
+                    addResult('error', `Failed to check hash for ${fileName}`, result.message);
+                }
+            } catch (error) {
+                addResult('error', `Network error for ${fileName}`, error.message);
+            }
+        }
+
+        // Summary
+        if (foundCount > 0 || notFoundCount > 0) {
+            addResult('info', 'Check Summary', 
+                `Found ${foundCount} hashes, ${notFoundCount} not found`);
+        }
+    } catch (error) {
+        addResult('error', 'Network error', error.message);
+    } finally {
+        checkAllHashesBtn.disabled = false;
     }
 }
 
@@ -191,15 +299,6 @@ async function refreshStats() {
     }
 }
 
-async function checkHashExists() {
-    if (!currentHash) {
-        addResult('error', 'No hash available', 'Please select a file first');
-        return;
-    }
-
-    await checkHash(currentHash, 'file');
-}
-
 async function checkManualHash() {
     const hash = manualHashInput.value.trim();
     
@@ -223,8 +322,8 @@ async function checkManualHash() {
 
 async function checkHash(hash, source) {
     try {
-        const button = source === 'file' ? checkHashBtn : checkManualHashBtn;
-        button.disabled = true;
+        const button = source === 'manual' ? checkManualHashBtn : null;
+        if (button) button.disabled = true;
         
         addResult('info', 'Checking hash...', 'Please wait...');
 
@@ -255,8 +354,9 @@ async function checkHash(hash, source) {
     } catch (error) {
         addResult('error', 'Network error', error.message);
     } finally {
-        const button = source === 'file' ? checkHashBtn : checkManualHashBtn;
-        button.disabled = false;
+        if (source === 'manual' && checkManualHashBtn) {
+            checkManualHashBtn.disabled = false;
+        }
     }
 }
 
@@ -274,9 +374,9 @@ function addResult(type, title, message) {
     
     results.insertBefore(resultItem, results.firstChild);
     
-    // Keep only the last 10 results
+    // Keep only the last 20 results for current uploads
     const resultItems = results.querySelectorAll('.result-item');
-    if (resultItems.length > 10) {
+    if (resultItems.length > 20) {
         results.removeChild(resultItems[resultItems.length - 1]);
     }
 }
@@ -289,5 +389,4 @@ manualHashInput.addEventListener('keypress', (e) => {
 });
 
 // Initial setup
-addResult('info', 'Frontend ready', 'Upload a file or enter a hash to get started');
 refreshStats(); // Load initial stats 
