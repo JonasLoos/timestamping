@@ -33,36 +33,48 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
         }
     }
 
-    fn get_index(&self, hash: &Hash512) -> usize {
+        fn get_index(&self, hash: &Hash512) -> usize {
         // Extract INDEX_SIZE bits starting from PREFIX_SIZE
         let byte_start = PREFIX_SIZE / 8;
         let bit_start = PREFIX_SIZE % 8;
-
+        
         let mut index = 0usize;
         let mut bits_collected = 0;
-
+        
         for i in 0..((INDEX_SIZE + 7) / 8) {
-            if byte_start + i >= hash.len() {
+            if byte_start + i >= hash.len() || bits_collected >= INDEX_SIZE {
                 break;
             }
-
+            
             let byte = hash[byte_start + i];
             let available_bits = 8 - if i == 0 { bit_start } else { 0 };
             let bits_to_take = std::cmp::min(available_bits, INDEX_SIZE - bits_collected);
-
-            let shift = if i == 0 { bit_start } else { 0 };
-            let mask = (1 << bits_to_take) - 1;
-            let extracted = (byte >> shift) & mask;
-
-            index |= (extracted as usize) << bits_collected;
-            bits_collected += bits_to_take;
-
-            if bits_collected >= INDEX_SIZE {
+            
+            if bits_to_take == 0 {
                 break;
             }
+            
+            let shift = if i == 0 { bit_start } else { 0 };
+            // Use u32 to avoid overflow, then convert to usize
+            let mask = if bits_to_take >= 32 { 
+                u32::MAX 
+            } else { 
+                (1u32 << bits_to_take) - 1 
+            };
+            let extracted = ((byte >> shift) as u32) & mask;
+            
+            if bits_collected < 32 {
+                index |= (extracted as usize) << bits_collected;
+            }
+            bits_collected += bits_to_take;
         }
-
-        index & ((1 << INDEX_SIZE) - 1)
+        
+        // Ensure we don't exceed INDEX_SIZE bits
+        if INDEX_SIZE >= 32 {
+            index
+        } else {
+            index & ((1usize << INDEX_SIZE) - 1)
+        }
     }
 
     pub fn add_hash(&self, hash: Hash512) -> bool {

@@ -11,10 +11,14 @@ const results = document.getElementById('results');
 const manualHashInput = document.getElementById('manualHashInput');
 const checkManualHashBtn = document.getElementById('checkManualHashBtn');
 const refreshStatsBtn = document.getElementById('refreshStatsBtn');
+const updateTreeBtn = document.getElementById('updateTreeBtn');
 const totalHashes = document.getElementById('totalHashes');
 const occupiedSlots = document.getElementById('occupiedSlots');
 const totalSlots = document.getElementById('totalSlots');
 const loadFactor = document.getElementById('loadFactor');
+const merkleTreeSize = document.getElementById('merkleTreeSize');
+const merkleRoot = document.getElementById('merkleRoot');
+const lastTreeUpdate = document.getElementById('lastTreeUpdate');
 
 // Current files data
 let currentFiles = [];
@@ -26,6 +30,7 @@ addAllHashesBtn.addEventListener('click', addAllHashesToStore);
 checkAllHashesBtn.addEventListener('click', checkAllHashes);
 checkManualHashBtn.addEventListener('click', checkManualHash);
 refreshStatsBtn.addEventListener('click', refreshStats);
+updateTreeBtn.addEventListener('click', updateMerkleTree);
 
 // Drag and drop functionality
 const fileInputLabel = document.querySelector('.file-input-label');
@@ -175,6 +180,7 @@ async function addAllHashesToStore() {
 
         const hashes = Array.from(fileHashes.values());
         let successCount = 0;
+        let duplicateCount = 0;
         let errorCount = 0;
 
         for (const [fileName, hash] of fileHashes) {
@@ -190,8 +196,13 @@ async function addAllHashesToStore() {
                 const result = await response.json();
 
                 if (response.ok && result.success) {
-                    successCount++;
-                    addResult('success', `Hash added for ${fileName}`, 'Hash added successfully');
+                    if (result.is_new) {
+                        successCount++;
+                        addResult('success', `Hash added for ${fileName}`, 'New hash added successfully');
+                    } else {
+                        duplicateCount++;
+                        addResult('warning', `Hash already exists for ${fileName}`, 'Hash was already in the store');
+                    }
                 } else {
                     errorCount++;
                     addResult('error', `Failed to add hash for ${fileName}`, result.message);
@@ -203,11 +214,15 @@ async function addAllHashesToStore() {
         }
 
         // Summary
-        if (successCount > 0) {
-            addResult('success', 'Upload Summary', 
-                `Successfully added ${successCount} hashes${errorCount > 0 ? `, ${errorCount} failed` : ''}`);
-            await refreshStats();
-        }
+        let summaryMessage = `Successfully processed ${fileHashes.size} files: `;
+        const parts = [];
+        if (successCount > 0) parts.push(`${successCount} new`);
+        if (duplicateCount > 0) parts.push(`${duplicateCount} duplicates`);
+        if (errorCount > 0) parts.push(`${errorCount} errors`);
+        summaryMessage += parts.join(', ');
+
+        addResult('success', 'Upload Summary', summaryMessage);
+        await refreshStats();
     } catch (error) {
         addResult('error', 'Network error', error.message);
     } finally {
@@ -243,7 +258,12 @@ async function checkAllHashes() {
                 if (response.ok && result.success) {
                     if (result.exists) {
                         foundCount++;
-                        addResult('success', `Hash found for ${fileName}`, 'Hash exists in the store');
+                        const proofInfo = result.merkle_proof ? 
+                            `<br><strong>Merkle Proof:</strong> ${result.merkle_proof.length} proof levels available` : 
+                            '<br><em>No merkle proof available (tree not generated)</em>';
+                        addResult('success', `Hash found for ${fileName}`, 
+                            `Hash exists in the store${proofInfo}`, 
+                            result.merkle_proof);
                     } else {
                         notFoundCount++;
                         addResult('info', `Hash not found for ${fileName}`, 'Hash does not exist in the store');
@@ -268,6 +288,34 @@ async function checkAllHashes() {
     }
 }
 
+async function updateMerkleTree() {
+    try {
+        updateTreeBtn.disabled = true;
+        addResult('info', 'Updating Merkle Tree...', 'Generating tree from current hashes...');
+
+        const response = await fetch(`${API_BASE_URL}/update-tree`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            addResult('success', 'Merkle Tree Updated', 
+                `Tree generated with ${result.hash_count} hashes (tree size: ${result.tree_size})`);
+            await refreshStats();
+        } else {
+            addResult('error', 'Failed to update Merkle tree', result.message || 'Unknown error');
+        }
+    } catch (error) {
+        addResult('error', 'Network error', error.message);
+    } finally {
+        updateTreeBtn.disabled = false;
+    }
+}
+
 async function refreshStats() {
     try {
         refreshStatsBtn.disabled = true;
@@ -289,6 +337,24 @@ async function refreshStats() {
             // Calculate load factor as percentage
             const loadFactorPercent = ((stats.slots / stats.total_slots) * 100).toFixed(2);
             loadFactor.textContent = `${loadFactorPercent}%`;
+
+            // Merkle tree stats
+            merkleTreeSize.textContent = stats.merkle_tree_size.toLocaleString();
+            
+            if (stats.merkle_tree_root) {
+                merkleRoot.textContent = `${stats.merkle_tree_root.substring(0, 16)}...${stats.merkle_tree_root.substring(stats.merkle_tree_root.length - 16)}`;
+                merkleRoot.title = stats.merkle_tree_root; // Full hash on hover
+            } else {
+                merkleRoot.textContent = 'Not generated';
+                merkleRoot.title = '';
+            }
+
+            if (stats.last_tree_update) {
+                const updateTime = new Date(stats.last_tree_update * 1000);
+                lastTreeUpdate.textContent = updateTime.toLocaleString();
+            } else {
+                lastTreeUpdate.textContent = 'Never';
+            }
         } else {
             addResult('error', 'Failed to fetch stats', 'Could not retrieve store statistics');
         }
@@ -339,14 +405,21 @@ async function checkHash(hash, source) {
 
         if (response.ok && result.success) {
             const status = result.exists ? 'found' : 'not found';
-            const message = result.exists 
+            let message = result.exists 
                 ? 'Hash exists in the store' 
                 : 'Hash does not exist in the store';
+            
+            if (result.exists && result.merkle_proof) {
+                message += `<br><strong>Merkle Proof:</strong> ${result.merkle_proof.length} proof levels available`;
+            } else if (result.exists) {
+                message += '<br><em>No merkle proof available (tree not generated)</em>';
+            }
             
             addResult(
                 result.exists ? 'success' : 'info',
                 `Hash ${status}`,
-                message
+                message,
+                result.merkle_proof
             );
         } else {
             addResult('error', 'Failed to check hash', result.message);
@@ -360,15 +433,37 @@ async function checkHash(hash, source) {
     }
 }
 
-function addResult(type, title, message) {
+function addResult(type, title, message, merkleProof = null) {
     const resultItem = document.createElement('div');
     resultItem.className = `result-item ${type}`;
     
     const timestamp = new Date().toLocaleTimeString();
     
+    let merkleProofHtml = '';
+    if (merkleProof && merkleProof.length > 0) {
+        merkleProofHtml = `
+            <div class="merkle-proof">
+                <h4>Merkle Proof:</h4>
+                <div class="proof-levels">
+                    ${merkleProof.map((level, index) => `
+                        <div class="proof-level">
+                            <strong>Level ${index + 1}:</strong>
+                            <div class="proof-pair">
+                                <div class="proof-hash">Left: ${level[0].substring(0, 16)}...${level[0].substring(level[0].length - 16)}</div>
+                                <div class="proof-hash">Right: ${level[1].substring(0, 16)}...${level[1].substring(level[1].length - 16)}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                <p class="proof-note">This proof can be used to verify the hash's inclusion in the merkle tree.</p>
+            </div>
+        `;
+    }
+    
     resultItem.innerHTML = `
         <h3>${title}</h3>
         <p>${message}</p>
+        ${merkleProofHtml}
         <p class="timestamp">${timestamp}</p>
     `;
     

@@ -54,8 +54,23 @@
                     <div class="stat-label">Load Factor</div>
                     <div class="stat-value" id="loadFactor">-</div>
                 </div>
+                <div class="stat-item">
+                    <div class="stat-label">Merkle Tree Size</div>
+                    <div class="stat-value" id="merkleTreeSize">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Merkle Root</div>
+                    <div class="stat-value merkle-root" id="merkleRoot">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Last Tree Update</div>
+                    <div class="stat-value" id="lastTreeUpdate">-</div>
+                </div>
             </div>
-            <button id="refreshStatsBtn" class="btn btn-secondary">Refresh Stats</button>
+            <div class="stats-actions">
+                <button id="refreshStatsBtn" class="btn btn-secondary">Refresh Stats</button>
+                <button id="updateTreeBtn" class="btn btn-primary">Update Merkle Tree</button>
+            </div>
         </div>
         
         <div class="manual-hash-section">

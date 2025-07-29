@@ -53,66 +53,22 @@ h3 {
     box-shadow: 0 8px 32px rgba(0,0,0,0.1);
 }
 
-.stats-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1.5rem;
-    margin-bottom: 1.5rem;
-}
-
-.stat-item {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 1.5rem;
-    text-align: center;
-    border: 2px solid #e9ecef;
-    transition: all 0.3s ease;
-}
-
-.stat-item:hover {
-    border-color: #667eea;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
-}
-
-.stat-label {
-    font-size: 0.9rem;
-    color: #666;
-    margin-bottom: 0.5rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-
-.stat-value {
-    font-size: 2rem;
-    font-weight: bold;
-    color: #333;
-    font-family: 'Courier New', monospace;
-}
-
 .file-input-container {
     position: relative;
-    margin-bottom: 1.5rem;
-}
-
-.file-input-container input[type="file"] {
-    position: absolute;
-    opacity: 0;
-    width: 100%;
-    height: 100%;
-    cursor: pointer;
+    margin-bottom: 1rem;
 }
 
 .file-input-label {
     display: block;
-    border: 2px dashed #ddd;
-    border-radius: 8px;
-    padding: 2rem;
+    padding: 3rem;
+    background: #f8f9fa;
+    border: 3px dashed #ddd;
+    border-radius: 12px;
     text-align: center;
     cursor: pointer;
     transition: all 0.3s ease;
-    background: #f8f9fa;
+    font-size: 1.1rem;
+    color: #666;
 }
 
 .file-input-label:hover {
@@ -120,35 +76,25 @@ h3 {
     background: #f0f2ff;
 }
 
-.file-input-text {
-    font-size: 1.1rem;
-    color: #666;
+#fileInput {
+    position: absolute;
+    left: -9999px;
 }
 
 .files-info {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 1.5rem;
     margin-bottom: 1.5rem;
 }
 
 .files-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
+    margin-bottom: 1rem;
 }
 
 .file-item {
-    background: white;
-    border-radius: 6px;
+    background: #f8f9fa;
+    border-radius: 8px;
     padding: 1rem;
-    border: 1px solid #e9ecef;
-    transition: all 0.3s ease;
-}
-
-.file-item:hover {
-    border-color: #667eea;
-    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
+    margin-bottom: 1rem;
+    border-left: 4px solid #667eea;
 }
 
 .file-header {
@@ -159,62 +105,39 @@ h3 {
 }
 
 .file-name {
-    font-weight: 500;
+    font-weight: 600;
     color: #333;
-    flex: 1;
-    margin-right: 1rem;
 }
 
 .file-size {
-    font-size: 0.9rem;
     color: #666;
-    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
 }
 
 .file-hash {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
+    margin-top: 0.5rem;
 }
 
 .hash-label {
-    font-size: 0.9rem;
-    color: #666;
     font-weight: 500;
+    color: #666;
+    font-size: 0.9rem;
 }
 
 .hash-value {
-    font-family: 'Courier New', monospace;
-    background: #e9ecef;
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
+    display: block;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     font-size: 0.8rem;
-    word-break: break-all;
-    min-height: 1.2rem;
-}
-
-.hash-display {
     color: #333;
-}
-
-.file-info {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 1rem;
-    margin-bottom: 1rem;
-}
-
-.file-info p {
-    margin-bottom: 0.5rem;
+    margin-top: 0.25rem;
+    word-break: break-all;
 }
 
 .hash-display {
-    font-family: 'Courier New', monospace;
     background: #e9ecef;
-    padding: 0.25rem 0.5rem;
+    padding: 0.5rem;
     border-radius: 4px;
-    font-size: 0.9rem;
-    word-break: break-all;
+    border: 1px solid #dee2e6;
 }
 
 .actions {
@@ -226,27 +149,30 @@ h3 {
 .btn {
     padding: 0.75rem 1.5rem;
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     font-size: 1rem;
     font-weight: 500;
     cursor: pointer;
     transition: all 0.3s ease;
-    min-width: 120px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .btn:disabled {
-    opacity: 0.5;
+    opacity: 0.6;
     cursor: not-allowed;
 }
 
 .btn-primary {
-    background: #667eea;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
 }
 
 .btn-primary:hover:not(:disabled) {
-    background: #5a6fd8;
-    transform: translateY(-1px);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
 }
 
 .btn-secondary {
@@ -256,65 +182,61 @@ h3 {
 
 .btn-secondary:hover:not(:disabled) {
     background: #5a6268;
-    transform: translateY(-1px);
-}
-
-.hash-input-container {
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-    flex-wrap: wrap;
-}
-
-.hash-input-container input {
-    flex: 1;
-    min-width: 300px;
-    padding: 0.75rem;
-    border: 2px solid #ddd;
-    border-radius: 6px;
-    font-size: 1rem;
-    font-family: 'Courier New', monospace;
-}
-
-.hash-input-container input:focus {
-    outline: none;
-    border-color: #667eea;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(108, 117, 125, 0.3);
 }
 
 .results-container {
-    min-height: 100px;
+    max-height: 600px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 1rem;
 }
 
 .result-item {
-    background: #f8f9fa;
-    border-radius: 8px;
     padding: 1rem;
     margin-bottom: 1rem;
-    border-left: 4px solid #667eea;
+    border-radius: 8px;
+    border-left: 4px solid #ddd;
+}
+
+.result-item:last-child {
+    margin-bottom: 0;
 }
 
 .result-item.success {
-    border-left-color: #28a745;
     background: #d4edda;
+    border-left-color: #28a745;
 }
 
 .result-item.error {
-    border-left-color: #dc3545;
     background: #f8d7da;
+    border-left-color: #dc3545;
+}
+
+.result-item.warning {
+    background: #fff3cd;
+    border-left-color: #ffc107;
 }
 
 .result-item.info {
-    border-left-color: #17a2b8;
     background: #d1ecf1;
+    border-left-color: #17a2b8;
 }
 
 .result-item h3 {
-    margin-bottom: 0.5rem;
-    font-size: 1.1rem;
+    margin: 0 0 0.5rem 0;
+    font-size: 1rem;
 }
 
 .result-item p {
-    margin-bottom: 0.25rem;
+    margin: 0 0 0.5rem 0;
+    line-height: 1.4;
+}
+
+.result-item p:last-child {
+    margin-bottom: 0;
 }
 
 .timestamp {
@@ -323,52 +245,145 @@ h3 {
     font-style: italic;
 }
 
-@media (max-width: 768px) {
+.stats-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.stat-item {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+    border: 1px solid #dee2e6;
+}
+
+.stat-label {
+    font-size: 0.9rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #333;
+}
+
+.merkle-root {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.9rem !important;
+    word-break: break-all;
+    cursor: help;
+}
+
+.stats-actions {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.hash-input-container {
+    display: flex;
+    gap: 1rem;
+    align-items: stretch;
+}
+
+#manualHashInput {
+    flex: 1;
+    padding: 0.75rem;
+    border: 2px solid #dee2e6;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+}
+
+#manualHashInput:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.merkle-proof {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: rgba(0, 0, 0, 0.05);
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.merkle-proof h4 {
+    margin: 0 0 1rem 0;
+    color: #333;
+    font-size: 1rem;
+}
+
+.proof-levels {
+    margin-bottom: 1rem;
+}
+
+.proof-level {
+    margin-bottom: 0.75rem;
+    padding: 0.5rem;
+    background: rgba(255, 255, 255, 0.5);
+    border-radius: 4px;
+}
+
+.proof-level:last-child {
+    margin-bottom: 0;
+}
+
+.proof-level strong {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: #333;
+    font-size: 0.9rem;
+}
+
+.proof-pair {
+    margin-left: 1rem;
+}
+
+.proof-hash {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.75rem;
+    color: #666;
+    margin-bottom: 0.25rem;
+    word-break: break-all;
+    background: rgba(0, 0, 0, 0.05);
+    padding: 0.25rem 0.5rem;
+    border-radius: 3px;
+}
+
+.proof-note {
+    font-size: 0.8rem;
+    color: #666;
+    font-style: italic;
+    margin: 0;
+}
+
+@media (max-width: 600px) {
     .container {
         padding: 1rem;
     }
     
-    .upload-section, .results-section, .manual-hash-section {
-        padding: 1.5rem;
-    }
-    
-    .stats-section {
-        padding: 1.5rem;
-    }
-    
     .stats-container {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 1rem;
-    }
-    
-    .stat-item {
-        padding: 1rem;
-    }
-    
-    .stat-value {
-        font-size: 1.5rem;
-    }
-    
-    .actions {
-        flex-direction: column;
+        grid-template-columns: 1fr;
     }
     
     .hash-input-container {
         flex-direction: column;
-        align-items: stretch;
     }
     
-    .hash-input-container input {
-        min-width: auto;
-    }
-    
-    .file-header {
+    .actions,
+    .stats-actions {
         flex-direction: column;
-        align-items: flex-start;
-        gap: 0.5rem;
     }
     
-    .file-name {
-        margin-right: 0;
+    .btn {
+        width: 100%;
     }
 } 
