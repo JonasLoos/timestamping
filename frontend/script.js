@@ -272,8 +272,9 @@ async function calculateFileHash(file) {
                 const arrayBuffer = e.target.result;
                 const hashBuffer = await crypto.subtle.digest('SHA-512', arrayBuffer);
                 const hashArray = Array.from(new Uint8Array(hashBuffer));
-                const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-                resolve(hashHex);
+                // Convert to base64 instead of hex
+                const hashBase64 = btoa(String.fromCharCode(...hashArray));
+                resolve(hashBase64);
             } catch (error) {
                 reject(error);
             }
@@ -458,13 +459,18 @@ async function checkManualHash() {
         return;
     }
 
-    if (hash.length !== 128) {
-        showManualResult('error', 'Invalid hash length', 'Hash must be exactly 128 characters');
+    // Validate base64 format
+    try {
+        atob(hash);
+    } catch (error) {
+        showManualResult('error', 'Invalid hash format', 'Hash must be in base64 format');
         return;
     }
 
-    if (!/^[0-9a-fA-F]{128}$/.test(hash)) {
-        showManualResult('error', 'Invalid hash format', 'Hash must be in hexadecimal format');
+    // Validate length (64 bytes = 512 bits)
+    const decodedBytes = new Uint8Array(atob(hash).split('').map(c => c.charCodeAt(0)));
+    if (decodedBytes.length !== 64) {
+        showManualResult('error', 'Invalid hash length', 'Hash must be exactly 64 bytes (512 bits)');
         return;
     }
 
@@ -603,9 +609,9 @@ async function verifyMerkleProof(leafHash, proof, expectedRoot) {
                 operation = 'Concatenate as right child with left sibling';
             }
             
-            // Convert hex strings to byte arrays
-            const leftBytes = new Uint8Array(leftHash.match(/.{2}/g).map(byte => parseInt(byte, 16)));
-            const rightBytes = new Uint8Array(rightHash.match(/.{2}/g).map(byte => parseInt(byte, 16)));
+            // Convert base64 strings to byte arrays
+            const leftBytes = new Uint8Array(atob(leftHash).split('').map(c => c.charCodeAt(0)));
+            const rightBytes = new Uint8Array(atob(rightHash).split('').map(c => c.charCodeAt(0)));
             
             // Concatenate byte arrays (same as backend hasher.update() calls)
             const combined = new Uint8Array(leftBytes.length + rightBytes.length);
@@ -615,7 +621,7 @@ async function verifyMerkleProof(leafHash, proof, expectedRoot) {
             // Hash the concatenated bytes
             const hashBuffer = await crypto.subtle.digest('SHA-512', combined);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
-            const newHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            const newHash = btoa(String.fromCharCode(...hashArray));
             
             steps.push({
                 stepNumber: i + 1,

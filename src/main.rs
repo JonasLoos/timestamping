@@ -7,13 +7,14 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 mod storage;
 use crate::storage::TimestampingService;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct AddHashRequest {
-    hash: String,
+    hash: String, // base64 encoded bytes
 }
 
 #[derive(Debug, Serialize)]
@@ -25,7 +26,7 @@ struct AddHashResponse {
 
 #[derive(Debug, Deserialize)]
 struct CheckHashRequest {
-    hash: String,
+    hash: String, // base64 encoded bytes
 }
 
 #[derive(Debug, Serialize)]
@@ -33,7 +34,7 @@ struct CheckHashResponse {
     success: bool,
     message: String,
     exists: bool,
-    merkle_proof: Option<Vec<(String, String)>>,
+    merkle_proof: Option<Vec<(String, String)>>, // base64 encoded bytes
 }
 
 #[derive(Debug, Serialize)]
@@ -50,11 +51,11 @@ struct GetStatsResponse {
     slots: usize,
     total_slots: usize,
     merkle_tree_size: usize,
-    merkle_tree_root: Option<String>,
+    merkle_tree_root: Option<String>, // base64 encoded bytes
     last_tree_update: Option<u64>,
 }
 
-const INDEX_SIZE: usize = 16;
+const INDEX_SIZE: usize = 28;
 const PREFIX_SIZE: usize = 0;
 
 #[tokio::main]
@@ -131,31 +132,8 @@ async fn add(
     axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
     Json(payload): Json<AddHashRequest>,
 ) -> (StatusCode, Json<AddHashResponse>) {
-    // Validate hash length (512 bits = 64 bytes = 128 hex characters)
-    if payload.hash.len() != 128 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(AddHashResponse {
-                success: false,
-                message: "Hash must be exactly 128 characters (512 bits)".to_string(),
-                is_new: false,
-            }),
-        );
-    }
-
-    // Validate hex format
-    if !payload.hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(AddHashResponse {
-                success: false,
-                message: "Hash must be in hexadecimal format".to_string(),
-                is_new: false,
-            }),
-        );
-    }
-
-    let hash_bytes = match hex::decode(&payload.hash) {
+    // Decode base64 hash
+    let hash_bytes = match BASE64.decode(&payload.hash) {
         Ok(bytes) => match bytes.try_into() {
             Ok(hash_array) => hash_array,
             Err(_) => {
@@ -163,7 +141,7 @@ async fn add(
                     StatusCode::BAD_REQUEST,
                     Json(AddHashResponse {
                         success: false,
-                        message: "Invalid hash length".to_string(),
+                        message: "Invalid hash length - must be 64 bytes".to_string(),
                         is_new: false,
                     }),
                 );
@@ -174,7 +152,7 @@ async fn add(
                 StatusCode::BAD_REQUEST,
                 Json(AddHashResponse {
                     success: false,
-                    message: "Invalid hex format".to_string(),
+                    message: "Invalid base64 format".to_string(),
                     is_new: false,
                 }),
             );
@@ -201,33 +179,8 @@ async fn check(
     axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
     Json(payload): Json<CheckHashRequest>,
 ) -> (StatusCode, Json<CheckHashResponse>) {
-    // Validate hash length (512 bits = 64 bytes = 128 hex characters)
-    if payload.hash.len() != 128 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(CheckHashResponse {
-                success: false,
-                message: "Hash must be exactly 128 characters (512 bits)".to_string(),
-                exists: false,
-                merkle_proof: None,
-            }),
-        );
-    }
-
-    // Validate hex format
-    if !payload.hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(CheckHashResponse {
-                success: false,
-                message: "Hash must be in hexadecimal format".to_string(),
-                exists: false,
-                merkle_proof: None,
-            }),
-        );
-    }
-
-    let hash_bytes = match hex::decode(&payload.hash) {
+    // Decode base64 hash
+    let hash_bytes = match BASE64.decode(&payload.hash) {
         Ok(bytes) => match bytes.try_into() {
             Ok(hash_array) => hash_array,
             Err(_) => {
@@ -235,7 +188,7 @@ async fn check(
                     StatusCode::BAD_REQUEST,
                     Json(CheckHashResponse {
                         success: false,
-                        message: "Invalid hash length".to_string(),
+                        message: "Invalid hash length - must be 64 bytes".to_string(),
                         exists: false,
                         merkle_proof: None,
                     }),
@@ -247,7 +200,7 @@ async fn check(
                 StatusCode::BAD_REQUEST,
                 Json(CheckHashResponse {
                     success: false,
-                    message: "Invalid hex format".to_string(),
+                    message: "Invalid base64 format".to_string(),
                     exists: false,
                     merkle_proof: None,
                 }),
@@ -259,7 +212,7 @@ async fn check(
     let merkle_proof = if exists {
         service.get_merkle_proof(&hash_bytes).map(|proof| {
             proof.into_iter()
-                .map(|(left, right)| (hex::encode(left), hex::encode(right)))
+                .map(|(left, right)| (BASE64.encode(left), BASE64.encode(right)))
                 .collect()
         })
     } else {
@@ -307,7 +260,7 @@ async fn get_stats(
         slots: service.hash_store.occupied_slots(),
         total_slots: 1 << INDEX_SIZE,
         merkle_tree_size: service.get_merkle_tree_size(),
-        merkle_tree_root: service.get_merkle_tree_root().map(|root| hex::encode(root)),
+        merkle_tree_root: service.get_merkle_tree_root().map(|root| BASE64.encode(root)),
         last_tree_update: service.get_last_update_timestamp(),
     };
     (StatusCode::OK, Json(stats))
