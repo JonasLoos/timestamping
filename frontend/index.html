@@ -19,20 +19,22 @@
                 </label>
             </div>
             
-            <div class="files-info" id="filesInfo" style="display: none;">
-                <h3>Selected Files:</h3>
-                <div id="filesList" class="files-list"></div>
-            </div>
-            
             <div class="actions">
                 <button id="addAllHashesBtn" class="btn btn-primary" disabled>Add All Hashes to Store</button>
                 <button id="checkAllHashesBtn" class="btn btn-secondary" disabled>Check All Hashes</button>
             </div>
         </div>
         
-        <div class="results-section">
-            <h2>Current Upload Results</h2>
-            <div id="results" class="results-container"></div>
+        <div class="files-tabs-section" id="filesTabsSection" style="display: none;">
+            <h2>File Processing</h2>
+            <div class="tabs-container">
+                <div class="tabs-header" id="tabsHeader">
+                    <!-- Tab buttons will be inserted here -->
+                </div>
+                <div class="tabs-content" id="tabsContent">
+                    <!-- Tab content will be inserted here -->
+                </div>
+            </div>
         </div>
         
         <div class="stats-section">
@@ -78,6 +80,42 @@
             <div class="hash-input-container">
                 <input type="text" id="manualHashInput" placeholder="Enter 128-character hex hash" maxlength="128">
                 <button id="checkManualHashBtn" class="btn btn-secondary">Check Hash</button>
+            </div>
+            <div id="manualCheckResult" class="manual-result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Merkle Proof Modal -->
+    <div id="proofModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Merkle Proof Verification</h2>
+                <button class="modal-close" id="closeModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="proof-info">
+                    <div class="info-item">
+                        <label>File Name:</label>
+                        <span id="proofFileName"></span>
+                    </div>
+                    <div class="info-item">
+                        <label>File Hash:</label>
+                        <span id="proofFileHash" class="hash-display"></span>
+                    </div>
+                    <div class="info-item">
+                        <label>Expected Root:</label>
+                        <span id="proofExpectedRoot" class="hash-display"></span>
+                    </div>
+                </div>
+                
+                <div class="verification-result" id="verificationResult">
+                    <div class="verification-status" id="verificationStatus">Verifying...</div>
+                    <div class="verification-details" id="verificationDetails"></div>
+                </div>
+                
+                <div class="proof-steps" id="proofSteps">
+                    <!-- Proof steps will be inserted here -->
+                </div>
             </div>
         </div>
     </div>

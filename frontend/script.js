@@ -3,13 +3,14 @@ const API_BASE_URL = 'http://127.0.0.1:3000';
 
 // DOM elements
 const fileInput = document.getElementById('fileInput');
-const filesInfo = document.getElementById('filesInfo');
-const filesList = document.getElementById('filesList');
+const filesTabsSection = document.getElementById('filesTabsSection');
+const tabsHeader = document.getElementById('tabsHeader');
+const tabsContent = document.getElementById('tabsContent');
 const addAllHashesBtn = document.getElementById('addAllHashesBtn');
 const checkAllHashesBtn = document.getElementById('checkAllHashesBtn');
-const results = document.getElementById('results');
 const manualHashInput = document.getElementById('manualHashInput');
 const checkManualHashBtn = document.getElementById('checkManualHashBtn');
+const manualCheckResult = document.getElementById('manualCheckResult');
 const refreshStatsBtn = document.getElementById('refreshStatsBtn');
 const updateTreeBtn = document.getElementById('updateTreeBtn');
 const totalHashes = document.getElementById('totalHashes');
@@ -20,9 +21,24 @@ const merkleTreeSize = document.getElementById('merkleTreeSize');
 const merkleRoot = document.getElementById('merkleRoot');
 const lastTreeUpdate = document.getElementById('lastTreeUpdate');
 
+// Modal elements
+const proofModal = document.getElementById('proofModal');
+const closeModal = document.getElementById('closeModal');
+const proofFileName = document.getElementById('proofFileName');
+const proofFileHash = document.getElementById('proofFileHash');
+const proofExpectedRoot = document.getElementById('proofExpectedRoot');
+const verificationResult = document.getElementById('verificationResult');
+const verificationStatus = document.getElementById('verificationStatus');
+const verificationDetails = document.getElementById('verificationDetails');
+const proofSteps = document.getElementById('proofSteps');
+
 // Current files data
 let currentFiles = [];
 let fileHashes = new Map(); // Map of file name to hash
+let fileStatuses = new Map(); // Map of file name to status info
+let fileProofs = new Map(); // Map of file name to merkle proof
+let activeTab = null;
+let currentMerkleRoot = '';
 
 // Event listeners
 fileInput.addEventListener('change', handleFilesSelect);
@@ -31,6 +47,14 @@ checkAllHashesBtn.addEventListener('click', checkAllHashes);
 checkManualHashBtn.addEventListener('click', checkManualHash);
 refreshStatsBtn.addEventListener('click', refreshStats);
 updateTreeBtn.addEventListener('click', updateMerkleTree);
+
+// Modal event listeners
+closeModal.addEventListener('click', hideProofModal);
+window.addEventListener('click', (e) => {
+    if (e.target === proofModal) {
+        hideProofModal();
+    }
+});
 
 // Drag and drop functionality
 const fileInputLabel = document.querySelector('.file-input-label');
@@ -68,46 +92,149 @@ async function handleFilesSelect() {
 
     currentFiles = files;
     fileHashes.clear();
-    clearResults();
+    fileStatuses.clear();
+    fileProofs.clear();
     
     showFilesInfo(files);
     
     // Calculate hashes for all files
     for (const file of files) {
+        updateFileStatus(file.name, 'upload', 'processing', 'Calculating hash...', '');
         try {
             const hash = await calculateFileHash(file);
             fileHashes.set(file.name, hash);
             updateFileHashDisplay(file.name, hash);
+            updateFileStatus(file.name, 'upload', 'pending', 'Hash calculated', '');
+            updateFileStatus(file.name, 'check', 'pending', 'Ready to check', '');
         } catch (error) {
-            addResult('error', `Error calculating hash for ${file.name}`, error.message);
+            updateFileStatus(file.name, 'upload', 'error', `Error: ${error.message}`, '');
         }
     }
     
     if (fileHashes.size > 0) {
         enableButtons();
+        // Auto-check all hashes after calculating them
+        setTimeout(() => checkAllHashes(), 500);
     }
 }
 
 function showFilesInfo(files) {
-    filesList.innerHTML = '';
+    // Clear existing tabs
+    tabsHeader.innerHTML = '';
+    tabsContent.innerHTML = '';
     
-    files.forEach(file => {
-        const fileItem = document.createElement('div');
-        fileItem.className = 'file-item';
-        fileItem.innerHTML = `
-            <div class="file-header">
-                <span class="file-name">${file.name}</span>
-                <span class="file-size">${formatFileSize(file.size)}</span>
+    files.forEach((file, index) => {
+        // Initialize status for this file
+        fileStatuses.set(file.name, {
+            upload: { status: 'pending', message: 'Not uploaded', timestamp: '' },
+            check: { status: 'pending', message: 'Not checked', timestamp: '' }
+        });
+        
+        // Create tab button
+        const tabButton = document.createElement('button');
+        tabButton.className = 'tab-button';
+        tabButton.textContent = file.name;
+        tabButton.dataset.filename = file.name;
+        tabButton.addEventListener('click', () => switchTab(file.name));
+        tabsHeader.appendChild(tabButton);
+        
+        // Create tab content
+        const tabContentDiv = document.createElement('div');
+        tabContentDiv.className = 'tab-content';
+        tabContentDiv.id = `tab-${file.name}`;
+        tabContentDiv.innerHTML = `
+            <div class="file-info">
+                <div class="file-header">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-size">${formatFileSize(file.size)}</span>
+                </div>
+                <div class="file-hash" id="hash-${file.name}">
+                    <span class="hash-label">Hash (SHA-512):</span>
+                    <span class="hash-value">Calculating...</span>
+                </div>
             </div>
-            <div class="file-hash" id="hash-${file.name}">
-                <span class="hash-label">Hash (SHA-512):</span>
-                <span class="hash-value">Calculating...</span>
+            <div class="file-status">
+                <div class="status-item pending" id="upload-status-${file.name}">
+                    <div class="status-label">Upload Status</div>
+                    <div class="status-value">Not uploaded</div>
+                    <div class="status-timestamp"></div>
+                </div>
+                <div class="status-item pending" id="check-status-${file.name}">
+                    <div class="status-label">Check Status</div>
+                    <div class="status-value">Not checked</div>
+                    <div class="status-timestamp"></div>
+                </div>
             </div>
         `;
-        filesList.appendChild(fileItem);
+        tabsContent.appendChild(tabContentDiv);
+        
+        // Activate first tab
+        if (index === 0) {
+            switchTab(file.name);
+        }
     });
     
-    filesInfo.style.display = 'block';
+    filesTabsSection.style.display = 'block';
+}
+
+function switchTab(filename) {
+    // Remove active class from all tabs and content
+    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+    
+    // Add active class to selected tab and content
+    const tabButton = document.querySelector(`[data-filename="${filename}"]`);
+    const tabContent = document.getElementById(`tab-${filename}`);
+    
+    if (tabButton && tabContent) {
+        tabButton.classList.add('active');
+        tabContent.classList.add('active');
+        activeTab = filename;
+    }
+}
+
+function updateFileStatus(fileName, type, status, message, timestamp, merkleProof = null) {
+    if (!timestamp) {
+        timestamp = new Date().toLocaleTimeString();
+    }
+    
+    // Update in memory
+    if (!fileStatuses.has(fileName)) {
+        fileStatuses.set(fileName, {
+            upload: { status: 'pending', message: 'Not uploaded', timestamp: '' },
+            check: { status: 'pending', message: 'Not checked', timestamp: '' }
+        });
+    }
+    
+    fileStatuses.get(fileName)[type] = { status, message, timestamp };
+    
+    // Store merkle proof if provided
+    if (merkleProof) {
+        fileProofs.set(fileName, merkleProof);
+    }
+    
+    // Update DOM
+    const statusElement = document.getElementById(`${type}-status-${fileName}`);
+    if (statusElement) {
+        statusElement.className = `status-item ${status}`;
+        statusElement.querySelector('.status-value').textContent = message;
+        statusElement.querySelector('.status-timestamp').textContent = timestamp;
+        
+        // Remove existing proof button
+        const existingButton = statusElement.querySelector('.proof-button');
+        if (existingButton) {
+            existingButton.remove();
+        }
+        
+        // Add proof button if merkle proof is available
+        if (merkleProof && merkleProof.length > 0) {
+            const proofButton = document.createElement('button');
+            proofButton.className = 'proof-button';
+            proofButton.textContent = 'View Proof';
+            proofButton.onclick = () => showProofModal(fileName);
+            statusElement.appendChild(proofButton);
+        }
+    }
 }
 
 function updateFileHashDisplay(fileName, hash) {
@@ -120,11 +247,13 @@ function updateFileHashDisplay(fileName, hash) {
 }
 
 function hideFilesInfo() {
-    filesInfo.style.display = 'none';
+    filesTabsSection.style.display = 'none';
     currentFiles = [];
     fileHashes.clear();
+    fileStatuses.clear();
+    fileProofs.clear();
+    activeTab = null;
     disableButtons();
-    clearResults();
 }
 
 function formatFileSize(bytes) {
@@ -164,26 +293,17 @@ function disableButtons() {
     checkAllHashesBtn.disabled = true;
 }
 
-function clearResults() {
-    results.innerHTML = '';
-}
-
 async function addAllHashesToStore() {
     if (fileHashes.size === 0) {
-        addResult('error', 'No hashes available', 'Please select files first');
         return;
     }
 
     try {
         addAllHashesBtn.disabled = true;
-        addResult('info', 'Adding hashes to store...', `Processing ${fileHashes.size} files...`);
-
-        const hashes = Array.from(fileHashes.values());
-        let successCount = 0;
-        let duplicateCount = 0;
-        let errorCount = 0;
 
         for (const [fileName, hash] of fileHashes) {
+            updateFileStatus(fileName, 'upload', 'processing', 'Adding to store...', '');
+            
             try {
                 const response = await fetch(`${API_BASE_URL}/add`, {
                     method: 'POST',
@@ -197,34 +317,19 @@ async function addAllHashesToStore() {
 
                 if (response.ok && result.success) {
                     if (result.is_new) {
-                        successCount++;
-                        addResult('success', `Hash added for ${fileName}`, 'New hash added successfully');
+                        updateFileStatus(fileName, 'upload', 'success', 'Successfully added to store', '');
                     } else {
-                        duplicateCount++;
-                        addResult('warning', `Hash already exists for ${fileName}`, 'Hash was already in the store');
+                        updateFileStatus(fileName, 'upload', 'warning', 'Already exists in store', '');
                     }
                 } else {
-                    errorCount++;
-                    addResult('error', `Failed to add hash for ${fileName}`, result.message);
+                    updateFileStatus(fileName, 'upload', 'error', `Failed: ${result.message}`, '');
                 }
             } catch (error) {
-                errorCount++;
-                addResult('error', `Network error for ${fileName}`, error.message);
+                updateFileStatus(fileName, 'upload', 'error', `Network error: ${error.message}`, '');
             }
         }
 
-        // Summary
-        let summaryMessage = `Successfully processed ${fileHashes.size} files: `;
-        const parts = [];
-        if (successCount > 0) parts.push(`${successCount} new`);
-        if (duplicateCount > 0) parts.push(`${duplicateCount} duplicates`);
-        if (errorCount > 0) parts.push(`${errorCount} errors`);
-        summaryMessage += parts.join(', ');
-
-        addResult('success', 'Upload Summary', summaryMessage);
         await refreshStats();
-    } catch (error) {
-        addResult('error', 'Network error', error.message);
     } finally {
         addAllHashesBtn.disabled = false;
     }
@@ -232,18 +337,15 @@ async function addAllHashesToStore() {
 
 async function checkAllHashes() {
     if (fileHashes.size === 0) {
-        addResult('error', 'No hashes available', 'Please select files first');
         return;
     }
 
     try {
         checkAllHashesBtn.disabled = true;
-        addResult('info', 'Checking hashes...', `Checking ${fileHashes.size} files...`);
-
-        let foundCount = 0;
-        let notFoundCount = 0;
 
         for (const [fileName, hash] of fileHashes) {
+            updateFileStatus(fileName, 'check', 'processing', 'Checking in store...', '');
+            
             try {
                 const response = await fetch(`${API_BASE_URL}/check`, {
                     method: 'POST',
@@ -257,32 +359,20 @@ async function checkAllHashes() {
 
                 if (response.ok && result.success) {
                     if (result.exists) {
-                        foundCount++;
                         const proofInfo = result.merkle_proof ? 
-                            `<br><strong>Merkle Proof:</strong> ${result.merkle_proof.length} proof levels available` : 
-                            '<br><em>No merkle proof available (tree not generated)</em>';
-                        addResult('success', `Hash found for ${fileName}`, 
-                            `Hash exists in the store${proofInfo}`, 
-                            result.merkle_proof);
+                            ` (${result.merkle_proof.length} proof levels)` : 
+                            ' (no proof available)';
+                        updateFileStatus(fileName, 'check', 'success', `Found in store${proofInfo}`, '', result.merkle_proof);
                     } else {
-                        notFoundCount++;
-                        addResult('info', `Hash not found for ${fileName}`, 'Hash does not exist in the store');
+                        updateFileStatus(fileName, 'check', 'warning', 'Not found in store', '');
                     }
                 } else {
-                    addResult('error', `Failed to check hash for ${fileName}`, result.message);
+                    updateFileStatus(fileName, 'check', 'error', `Failed: ${result.message}`, '');
                 }
             } catch (error) {
-                addResult('error', `Network error for ${fileName}`, error.message);
+                updateFileStatus(fileName, 'check', 'error', `Network error: ${error.message}`, '');
             }
         }
-
-        // Summary
-        if (foundCount > 0 || notFoundCount > 0) {
-            addResult('info', 'Check Summary', 
-                `Found ${foundCount} hashes, ${notFoundCount} not found`);
-        }
-    } catch (error) {
-        addResult('error', 'Network error', error.message);
     } finally {
         checkAllHashesBtn.disabled = false;
     }
@@ -291,7 +381,6 @@ async function checkAllHashes() {
 async function updateMerkleTree() {
     try {
         updateTreeBtn.disabled = true;
-        addResult('info', 'Updating Merkle Tree...', 'Generating tree from current hashes...');
 
         const response = await fetch(`${API_BASE_URL}/update-tree`, {
             method: 'POST',
@@ -303,14 +392,10 @@ async function updateMerkleTree() {
         const result = await response.json();
 
         if (response.ok && result.success) {
-            addResult('success', 'Merkle Tree Updated', 
-                `Tree generated with ${result.hash_count} hashes (tree size: ${result.tree_size})`);
             await refreshStats();
-        } else {
-            addResult('error', 'Failed to update Merkle tree', result.message || 'Unknown error');
         }
     } catch (error) {
-        addResult('error', 'Network error', error.message);
+        console.error('Failed to update Merkle tree:', error);
     } finally {
         updateTreeBtn.disabled = false;
     }
@@ -342,9 +427,11 @@ async function refreshStats() {
             merkleTreeSize.textContent = stats.merkle_tree_size.toLocaleString();
             
             if (stats.merkle_tree_root) {
+                currentMerkleRoot = stats.merkle_tree_root;
                 merkleRoot.textContent = `${stats.merkle_tree_root.substring(0, 16)}...${stats.merkle_tree_root.substring(stats.merkle_tree_root.length - 16)}`;
                 merkleRoot.title = stats.merkle_tree_root; // Full hash on hover
             } else {
+                currentMerkleRoot = '';
                 merkleRoot.textContent = 'Not generated';
                 merkleRoot.title = '';
             }
@@ -355,11 +442,9 @@ async function refreshStats() {
             } else {
                 lastTreeUpdate.textContent = 'Never';
             }
-        } else {
-            addResult('error', 'Failed to fetch stats', 'Could not retrieve store statistics');
         }
     } catch (error) {
-        addResult('error', 'Network error', error.message);
+        console.error('Failed to refresh stats:', error);
     } finally {
         refreshStatsBtn.disabled = false;
     }
@@ -369,29 +454,27 @@ async function checkManualHash() {
     const hash = manualHashInput.value.trim();
     
     if (!hash) {
-        addResult('error', 'No hash provided', 'Please enter a hash to check');
+        showManualResult('error', 'No hash provided', 'Please enter a hash to check');
         return;
     }
 
     if (hash.length !== 128) {
-        addResult('error', 'Invalid hash length', 'Hash must be exactly 128 characters');
+        showManualResult('error', 'Invalid hash length', 'Hash must be exactly 128 characters');
         return;
     }
 
     if (!/^[0-9a-fA-F]{128}$/.test(hash)) {
-        addResult('error', 'Invalid hash format', 'Hash must be in hexadecimal format');
+        showManualResult('error', 'Invalid hash format', 'Hash must be in hexadecimal format');
         return;
     }
 
-    await checkHash(hash, 'manual');
+    await checkHash(hash);
 }
 
-async function checkHash(hash, source) {
+async function checkHash(hash) {
     try {
-        const button = source === 'manual' ? checkManualHashBtn : null;
-        if (button) button.disabled = true;
-        
-        addResult('info', 'Checking hash...', 'Please wait...');
+        checkManualHashBtn.disabled = true;
+        showManualResult('info', 'Checking hash...', 'Please wait...');
 
         const response = await fetch(`${API_BASE_URL}/check`, {
             method: 'POST',
@@ -404,41 +487,28 @@ async function checkHash(hash, source) {
         const result = await response.json();
 
         if (response.ok && result.success) {
-            const status = result.exists ? 'found' : 'not found';
-            let message = result.exists 
-                ? 'Hash exists in the store' 
-                : 'Hash does not exist in the store';
-            
-            if (result.exists && result.merkle_proof) {
-                message += `<br><strong>Merkle Proof:</strong> ${result.merkle_proof.length} proof levels available`;
-            } else if (result.exists) {
-                message += '<br><em>No merkle proof available (tree not generated)</em>';
+            if (result.exists) {
+                let message = 'Hash exists in the store';
+                if (result.merkle_proof) {
+                    message += ` with ${result.merkle_proof.length} proof levels available`;
+                } else {
+                    message += ' (no merkle proof available - tree not generated)';
+                }
+                showManualResult('success', 'Hash found', message, result.merkle_proof);
+            } else {
+                showManualResult('info', 'Hash not found', 'Hash does not exist in the store');
             }
-            
-            addResult(
-                result.exists ? 'success' : 'info',
-                `Hash ${status}`,
-                message,
-                result.merkle_proof
-            );
         } else {
-            addResult('error', 'Failed to check hash', result.message);
+            showManualResult('error', 'Failed to check hash', result.message);
         }
     } catch (error) {
-        addResult('error', 'Network error', error.message);
+        showManualResult('error', 'Network error', error.message);
     } finally {
-        if (source === 'manual' && checkManualHashBtn) {
-            checkManualHashBtn.disabled = false;
-        }
+        checkManualHashBtn.disabled = false;
     }
 }
 
-function addResult(type, title, message, merkleProof = null) {
-    const resultItem = document.createElement('div');
-    resultItem.className = `result-item ${type}`;
-    
-    const timestamp = new Date().toLocaleTimeString();
-    
+function showManualResult(type, title, message, merkleProof = null) {
     let merkleProofHtml = '';
     if (merkleProof && merkleProof.length > 0) {
         merkleProofHtml = `
@@ -460,26 +530,176 @@ function addResult(type, title, message, merkleProof = null) {
         `;
     }
     
-    resultItem.innerHTML = `
-        <h3>${title}</h3>
+    manualCheckResult.className = `manual-result ${type}`;
+    manualCheckResult.innerHTML = `
+        <h4>${title}</h4>
         <p>${message}</p>
         ${merkleProofHtml}
-        <p class="timestamp">${timestamp}</p>
     `;
+    manualCheckResult.style.display = 'block';
+}
+
+// Merkle Proof Modal Functions
+function showProofModal(fileName) {
+    const proof = fileProofs.get(fileName);
+    const hash = fileHashes.get(fileName);
     
-    results.insertBefore(resultItem, results.firstChild);
-    
-    // Keep only the last 20 results for current uploads
-    const resultItems = results.querySelectorAll('.result-item');
-    if (resultItems.length > 20) {
-        results.removeChild(resultItems[resultItems.length - 1]);
+    if (!proof || !hash) {
+        return;
     }
+    
+    // Set basic info
+    proofFileName.textContent = fileName;
+    proofFileHash.textContent = hash;
+    proofExpectedRoot.textContent = currentMerkleRoot || 'Not available';
+    
+    // Show modal
+    proofModal.style.display = 'block';
+    
+    // Verify proof
+    verifyMerkleProof(hash, proof, currentMerkleRoot);
+}
+
+function hideProofModal() {
+    proofModal.style.display = 'none';
+}
+
+async function verifyMerkleProof(leafHash, proof, expectedRoot) {
+    verificationStatus.textContent = 'Verifying proof...';
+    verificationResult.className = 'verification-result';
+    verificationDetails.textContent = '';
+    proofSteps.innerHTML = '';
+    
+    try {
+        let currentHash = leafHash;
+        const steps = [];
+        
+        // Add initial step
+        steps.push({
+            stepNumber: 0,
+            operation: 'Starting with leaf hash',
+            leftHash: '',
+            rightHash: '',
+            operator: '',
+            result: currentHash,
+            isCurrent: true
+        });
+        
+        // Process each proof level
+        for (let i = 0; i < proof.length; i++) {
+            const [leftSibling, rightSibling] = proof[i];
+            let leftHash, rightHash, operation;
+            
+            // Determine if current hash is left or right child
+            if (leftSibling === currentHash) {
+                // Current hash is the left child
+                leftHash = currentHash;
+                rightHash = rightSibling;
+                operation = 'Concatenate as left child with right sibling';
+            } else {
+                // Current hash is the right child
+                leftHash = leftSibling;
+                rightHash = currentHash;
+                operation = 'Concatenate as right child with left sibling';
+            }
+            
+            // Concatenate and hash
+            const combined = leftHash + rightHash;
+            const hashBuffer = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(combined));
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const newHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            steps.push({
+                stepNumber: i + 1,
+                operation: operation,
+                leftHash: leftHash,
+                rightHash: rightHash,
+                operator: '+',
+                result: newHash,
+                isCurrent: false
+            });
+            
+            currentHash = newHash;
+        }
+        
+        // Mark last step as current
+        if (steps.length > 1) {
+            steps[steps.length - 1].isCurrent = true;
+            steps[0].isCurrent = false;
+        }
+        
+        // Display all steps
+        displayProofSteps(steps);
+        
+        // Check if computed root matches expected root
+        const isValid = currentHash === expectedRoot;
+        
+        if (isValid) {
+            verificationResult.className = 'verification-result success';
+            verificationStatus.textContent = '✓ Proof Verified Successfully';
+            verificationDetails.textContent = 'The computed root hash matches the expected merkle root. This proves the file was included in the merkle tree at the time of generation.';
+        } else {
+            verificationResult.className = 'verification-result error';
+            verificationStatus.textContent = '✗ Proof Verification Failed';
+            verificationDetails.textContent = `The computed root hash (${currentHash.substring(0, 16)}...${currentHash.substring(currentHash.length - 16)}) does not match the expected root. This could indicate the proof is invalid or the merkle tree has been updated.`;
+        }
+        
+    } catch (error) {
+        verificationResult.className = 'verification-result error';
+        verificationStatus.textContent = '✗ Verification Error';
+        verificationDetails.textContent = `Failed to verify proof: ${error.message}`;
+        console.error('Proof verification error:', error);
+    }
+}
+
+function displayProofSteps(steps) {
+    proofSteps.innerHTML = '';
+    
+    steps.forEach((step, index) => {
+        const stepDiv = document.createElement('div');
+        stepDiv.className = `proof-step ${step.isCurrent ? 'current' : ''}`;
+        
+        if (step.stepNumber === 0) {
+            // Initial step
+            stepDiv.innerHTML = `
+                <div class="step-header">
+                    <div class="step-number">${step.stepNumber}</div>
+                    <span>${step.operation}</span>
+                </div>
+                <div class="step-result">${step.result}</div>
+            `;
+        } else {
+            // Hash combination step
+            stepDiv.innerHTML = `
+                <div class="step-header">
+                    <div class="step-number">${step.stepNumber}</div>
+                    <span>${step.operation}</span>
+                </div>
+                <div class="step-operation">SHA-512(left + right)</div>
+                <div class="step-hashes">
+                    <div class="step-hash">${step.leftHash}</div>
+                    <div class="step-operator">${step.operator}</div>
+                    <div class="step-hash">${step.rightHash}</div>
+                </div>
+                <div class="step-result">${step.result}</div>
+            `;
+        }
+        
+        proofSteps.appendChild(stepDiv);
+    });
 }
 
 // Handle Enter key in manual hash input
 manualHashInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
         checkManualHash();
+    }
+});
+
+// Handle Escape key to close modal
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && proofModal.style.display === 'block') {
+        hideProofModal();
     }
 });
 
