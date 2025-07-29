@@ -1,340 +1,349 @@
-use std::sync::Mutex;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+use sha2::{Digest, Sha512};
 
-/// A 512-bit hash represented as 64 bytes
 pub type Hash512 = [u8; 64];
 
-/// Linked List node for storing hashes
+#[derive(Debug, Clone)]
 pub struct HashLL {
     pub hash: Hash512,
     pub next: Option<Box<HashLL>>,
 }
 
 impl HashLL {
-    pub fn new(hash: Hash512) -> Self {
-        Self {
-            hash,
-            next: None,
-        }
+    pub fn new(hash: Hash512, next: Option<Box<HashLL>>) -> Self {
+        Self { hash, next }
     }
 }
 
-/// Fixed-size array of hashes
+#[derive(Debug)]
+pub struct HashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> {
+    data: Arc<RwLock<Vec<Option<Box<HashLL>>>>>,
+    num_elements: Arc<RwLock<usize>>,
+    buckets_filled: Arc<RwLock<usize>>,
+}
+
+impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PREFIX_SIZE> {
+    pub fn new() -> Self {
+        let total_buckets = 1 << INDEX_SIZE;
+        Self {
+            data: Arc::new(RwLock::new(vec![None; total_buckets])),
+            num_elements: Arc::new(RwLock::new(0)),
+            buckets_filled: Arc::new(RwLock::new(0)),
+        }
+    }
+
+    fn get_index(&self, hash: &Hash512) -> usize {
+        // Extract INDEX_SIZE bits starting from PREFIX_SIZE
+        let byte_start = PREFIX_SIZE / 8;
+        let bit_start = PREFIX_SIZE % 8;
+
+        let mut index = 0usize;
+        let mut bits_collected = 0;
+
+        for i in 0..((INDEX_SIZE + 7) / 8) {
+            if byte_start + i >= hash.len() {
+                break;
+            }
+
+            let byte = hash[byte_start + i];
+            let available_bits = 8 - if i == 0 { bit_start } else { 0 };
+            let bits_to_take = std::cmp::min(available_bits, INDEX_SIZE - bits_collected);
+
+            let shift = if i == 0 { bit_start } else { 0 };
+            let mask = (1 << bits_to_take) - 1;
+            let extracted = (byte >> shift) & mask;
+
+            index |= (extracted as usize) << bits_collected;
+            bits_collected += bits_to_take;
+
+            if bits_collected >= INDEX_SIZE {
+                break;
+            }
+        }
+
+        index & ((1 << INDEX_SIZE) - 1)
+    }
+
+    pub fn add_hash(&self, hash: Hash512) -> bool {
+        let index = self.get_index(&hash);
+        let mut data = self.data.write().unwrap();
+
+        if data[index].is_none() {
+            // Add hash to new bucket
+            data[index] = Some(Box::new(HashLL::new(hash, None)));
+            *self.buckets_filled.write().unwrap() += 1;
+            *self.num_elements.write().unwrap() += 1;
+            return true;
+        }
+
+        // Check if hash already exists and find insertion point
+        {
+            let bucket = data[index].as_ref().unwrap();
+            if hash == bucket.hash {
+                return false; // Hash already exists
+            }
+
+            if hash < bucket.hash {
+                // Insert at the front
+                let old_bucket = data[index].take().unwrap();
+                data[index] = Some(Box::new(HashLL::new(hash, Some(old_bucket))));
+                *self.num_elements.write().unwrap() += 1;
+                return true;
+            }
+        }
+
+        // Traverse the linked list to find the correct insertion point
+        let bucket = data[index].as_mut().unwrap();
+        let mut current = bucket;
+
+        loop {
+            if let Some(next_node) = &current.next {
+                if hash == next_node.hash {
+                    return false; // Hash already exists
+                }
+                if hash < next_node.hash {
+                    // Insert between current and next
+                    let old_next = current.next.take();
+                    current.next = Some(Box::new(HashLL::new(hash, old_next)));
+                    *self.num_elements.write().unwrap() += 1;
+                    return true;
+                }
+                // Move to next node
+                current = current.next.as_mut().unwrap();
+            } else {
+                // Insert at the end
+                current.next = Some(Box::new(HashLL::new(hash, None)));
+                *self.num_elements.write().unwrap() += 1;
+                return true;
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        *self.num_elements.read().unwrap()
+    }
+
+    pub fn occupied_slots(&self) -> usize {
+        *self.buckets_filled.read().unwrap()
+    }
+
+    pub fn contains(&self, hash: &Hash512) -> bool {
+        let index = self.get_index(hash);
+        let data = self.data.read().unwrap();
+
+        if let Some(node) = &data[index] {
+            let mut current = node;
+            loop {
+                if current.hash == *hash {
+                    return true;
+                }
+                match &current.next {
+                    Some(next) => current = next,
+                    None => break,
+                }
+            }
+        }
+        false
+    }
+
+    pub fn to_array(&self) -> HashArray {
+        let mut hashes = Vec::new();
+        let data = self.data.read().unwrap();
+
+        for bucket in data.iter() {
+            if let Some(node) = bucket {
+                let mut current = node;
+                loop {
+                    hashes.push(current.hash);
+                    match &current.next {
+                        Some(next) => current = next,
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        // Sort the hashes for consistent merkle tree construction
+        hashes.sort();
+
+        HashArray { data: hashes }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct HashArray {
     pub data: Vec<Hash512>,
 }
 
 impl HashArray {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            data: Vec::with_capacity(capacity),
-        }
-    }
-
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
+    pub fn to_merkle_tree(&self) -> MerkleTree {
+        if self.data.is_empty() {
+            return MerkleTree::new(0);
+        }
 
-    pub fn push(&mut self, hash: Hash512) {
-        self.data.push(hash);
-    }
+        let n = self.data.len();
+        let depth = (n as f64).log2().ceil() as usize;
+        let tree_size = (1 << (depth + 1)) - 1;
 
-    pub fn get(&self, index: usize) -> Option<&Hash512> {
-        self.data.get(index)
-    }
+        let mut tree_data = vec![[0u8; 64]; tree_size];
 
-    // pub fn to_merkle_tree(&self, total_size: usize) -> MerkleTree<total_size> {
-    // }
+        // Copy data to leaves (rightmost part of the tree)
+        let leaf_start = (1 << depth) - 1;
+        for (i, &hash) in self.data.iter().enumerate() {
+            tree_data[leaf_start + i] = hash;
+        }
+
+        // Build tree from bottom up
+        for level in (0..depth).rev() {
+            let level_start = (1 << level) - 1;
+            let child_level_start = (1 << (level + 1)) - 1;
+
+            for i in 0..(1 << level) {
+                let parent_idx = level_start + i;
+                let left_child_idx = child_level_start + 2 * i;
+                let right_child_idx = child_level_start + 2 * i + 1;
+
+                let mut hasher = Sha512::new();
+                hasher.update(&tree_data[left_child_idx]);
+                hasher.update(&tree_data[right_child_idx]);
+                let result = hasher.finalize();
+
+                tree_data[parent_idx].copy_from_slice(&result[..64]);
+            }
+        }
+
+        MerkleTree {
+            data: tree_data,
+            depth,
+            leaf_count: n,
+        }
+    }
 }
 
-pub struct MerkleTree<const TOTAL_SIZE: usize> {
-    data: [Hash512; TOTAL_SIZE],
+#[derive(Debug, Clone)]
+pub struct MerkleTree {
+    pub data: Vec<Hash512>,
+    pub depth: usize,
+    pub leaf_count: usize,
 }
 
-// impl<const TOTAL_SIZE: usize> MerkleTree<TOTAL_SIZE> {
-//     pub fn new(data: HashArray) -> Self {
-//         Self {
-//             data: [Hash512::default(); TOTAL_SIZE],
-//         }
-//     }
-// }
-
-/// Main hash storage structure with configurable index and prefix sizes
-pub struct HashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> {
-    data: Mutex<Vec<Option<Box<HashLL>>>>,
-    num_elements: Mutex<usize>,
-    occupied_slots: Mutex<usize>,
-}
-
-impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PREFIX_SIZE> {
-    /// Create a new HashStore with the specified sizes
-    ///
-    /// # Panics
-    ///
-    /// Panics if INDEX_SIZE is greater than 64 (since we're working with 512-bit hashes)
-    pub fn new() -> Self {
-        assert!(INDEX_SIZE <= 64, "INDEX_SIZE cannot be greater than 64");
-        assert!(PREFIX_SIZE + INDEX_SIZE <= 64, "PREFIX_SIZE + INDEX_SIZE cannot exceed 64");
-
-        let capacity = 1 << INDEX_SIZE;
-        let mut data = Vec::with_capacity(capacity);
-        data.resize_with(capacity, || None);
-
+impl MerkleTree {
+    pub fn new(depth: usize) -> Self {
+        let size = if depth == 0 { 0 } else { (1 << (depth + 1)) - 1 };
         Self {
-            data: Mutex::new(data),
-            num_elements: Mutex::new(0),
-            occupied_slots: Mutex::new(0),
+            data: vec![[0u8; 64]; size],
+            depth,
+            leaf_count: 0,
         }
     }
 
-    /// Add a hash to the store
-    pub fn add_hash(&self, hash: Hash512) {
-        let index = self.get_index(&hash);
-
-        // Create new linked list node
-        let new_node = Box::new(HashLL::new(hash));
-
-        // Lock the data mutex and insert at the beginning of the linked list for O(1) insertion
-        let mut data = self.data.lock().unwrap();
-        let mut new_node = new_node;
-
-        // Move the existing list to the new node's next pointer
-        let next = data[index].take();
-        if next.is_none() {
-            let mut occupied_slots = self.occupied_slots.lock().unwrap();
-            *occupied_slots += 1;
-        }
-        new_node.next = next;
-
-        // Set the new node as the head of the list
-        data[index] = Some(new_node);
-
-        // Increment element count
-        let mut count = self.num_elements.lock().unwrap();
-        *count += 1;
-    }
-
-    /// Get the number of elements in the store
-    pub fn len(&self) -> usize {
-        *self.num_elements.lock().unwrap()
-    }
-
-    /// Get the number of occupied slots in the store
-    pub fn occupied_slots(&self) -> usize {
-        *self.occupied_slots.lock().unwrap()
-    }
-
-    /// Check if the store is empty
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Convert the store to a HashArray
-    pub fn to_array(&self) -> HashArray {
-        let num_elements = self.len();
-        let mut hash_array = HashArray::new(num_elements);
-
-        let data = self.data.lock().unwrap();
-        for bucket in data.iter() {
-            let mut current = bucket.as_ref();
-            while let Some(node) = current {
-                hash_array.push(node.hash);
-                current = node.next.as_ref();
-            }
+    pub fn get(&self, hash: &Hash512) -> Option<Vec<(Hash512, Hash512)>> {
+        if self.leaf_count == 0 {
+            return None;
         }
 
-        hash_array
-    }
+        // Find the hash in the leaves
+        let leaf_start = (1 << self.depth) - 1;
+        let mut hash_idx = None;
 
-    /// Get all hashes as a vector
-    pub fn to_vec(&self) -> Vec<Hash512> {
-        self.to_array().data
-    }
-
-    /// Check if a hash exists in the store
-    pub fn contains(&self, hash: &Hash512) -> bool {
-        let index = self.get_index(hash);
-
-        let data = self.data.lock().unwrap();
-        let mut current = &data[index];
-        while let Some(node) = current {
-            if &node.hash == hash {
-                return true;
-            }
-            current = &node.next;
-        }
-
-        false
-    }
-
-    /// Get the index for a hash based on the PREFIX_SIZE and INDEX_SIZE configuration
-    fn get_index(&self, hash: &Hash512) -> usize {
-        // Extract the relevant bits from the hash
-        // We'll use the first INDEX_SIZE bits starting from PREFIX_SIZE
-        let mut index = 0usize;
-
-        // Calculate which byte we start from
-        let start_byte = PREFIX_SIZE / 8;
-        let start_bit = PREFIX_SIZE % 8;
-
-        // Calculate how many bytes we need
-        let num_bytes = (INDEX_SIZE + 7) / 8; // Ceiling division
-
-        for i in 0..num_bytes {
-            let byte_index = start_byte + i;
-            if byte_index >= 64 {
+        for i in 0..self.leaf_count {
+            if self.data[leaf_start + i] == *hash {
+                hash_idx = Some(i);
                 break;
             }
+        }
 
-            let mut byte = hash[byte_index];
+        let hash_idx = hash_idx?;
 
-            // Handle bit alignment
-            if i == 0 && start_bit > 0 {
-                byte >>= start_bit;
+        // Generate proof path from leaf to root
+        let mut proof = Vec::new();
+        let mut current_idx = hash_idx;
+
+        for level in (0..self.depth).rev() {
+            let level_start = (1 << level) - 1;
+            let left_child_idx = level_start + (1 << level) + (current_idx & !1);
+            let right_child_idx = left_child_idx + 1;
+
+            if left_child_idx < self.data.len() && right_child_idx < self.data.len() {
+                proof.push((self.data[left_child_idx], self.data[right_child_idx]));
             }
 
-            // Only take the bits we need
-            let bits_to_take = if i == num_bytes - 1 {
-                let remaining_bits = INDEX_SIZE - (i * 8);
-                if remaining_bits < 8 {
-                    remaining_bits
-                } else {
-                    8
-                }
-            } else {
-                8
-            };
-
-            let mask = if bits_to_take == 8 { 0xFF } else { (1 << bits_to_take) - 1 };
-            byte &= mask;
-
-            index |= (byte as usize) << (i * 8);
+            current_idx /= 2;
         }
 
-        index % (1 << INDEX_SIZE)
+        Some(proof)
+    }
+
+    pub fn root(&self) -> Option<Hash512> {
+        if self.data.is_empty() {
+            None
+        } else {
+            Some(self.data[0])
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        self.data.len()
     }
 }
 
-// Default implementation for common use cases
-impl HashStore<16, 0> {
-    /// Create a default HashStore with 16-bit index and 0-bit prefix
-    pub fn new_default() -> Self {
-        Self::new()
-    }
+#[derive(Debug, Clone)]
+pub struct TimestampingService<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> {
+    pub hash_store: Arc<HashStore<INDEX_SIZE, PREFIX_SIZE>>,
+    pub merkle_tree: Arc<RwLock<Option<MerkleTree>>>,
+    pub last_tree_update: Arc<RwLock<Option<SystemTime>>>,
 }
 
-// Implement Clone for HashArray
-impl Clone for HashArray {
-    fn clone(&self) -> Self {
+impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDEX_SIZE, PREFIX_SIZE> {
+    pub fn new() -> Self {
         Self {
-            data: self.data.clone(),
+            hash_store: Arc::new(HashStore::new()),
+            merkle_tree: Arc::new(RwLock::new(None)),
+            last_tree_update: Arc::new(RwLock::new(None)),
         }
     }
-}
 
-// Implement Debug for all types
-impl std::fmt::Debug for HashLL {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HashLL")
-            .field("hash", &hex::encode(self.hash))
-            .field("next", &self.next.is_some())
-            .finish()
-    }
-}
+    pub fn update_merkle_tree(&self) {
+        let hash_array = self.hash_store.to_array();
+        let new_tree = hash_array.to_merkle_tree();
 
-impl std::fmt::Debug for HashArray {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HashArray")
-            .field("len", &self.len())
-            .field("data", &self.data.iter().map(|h| hex::encode(h)).collect::<Vec<_>>())
-            .finish()
-    }
-}
-
-impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> std::fmt::Debug for HashStore<INDEX_SIZE, PREFIX_SIZE> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HashStore")
-            .field("index_size", &INDEX_SIZE)
-            .field("prefix_size", &PREFIX_SIZE)
-            .field("capacity", &(1 << INDEX_SIZE))
-            .field("num_elements", &self.len())
-            .finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_hash_ll() {
-        let hash = [1u8; 64];
-        let node = HashLL::new(hash);
-        assert_eq!(node.hash, hash);
-        assert!(node.next.is_none());
+        *self.merkle_tree.write().unwrap() = Some(new_tree);
+        *self.last_tree_update.write().unwrap() = Some(SystemTime::now());
     }
 
-    #[test]
-    fn test_hash_array() {
-        let mut array = HashArray::new(10);
-        assert!(array.is_empty());
-
-        let hash = [1u8; 64];
-        array.push(hash);
-        assert_eq!(array.len(), 1);
-        assert_eq!(array.get(0), Some(&hash));
+    pub fn get_merkle_proof(&self, hash: &Hash512) -> Option<Vec<(Hash512, Hash512)>> {
+        let tree = self.merkle_tree.read().unwrap();
+        tree.as_ref()?.get(hash)
     }
 
-    #[test]
-    fn test_hash_store_basic() {
-        let store = HashStore::<4, 0>::new();
-        assert!(store.is_empty());
-        assert_eq!(store.len(), 0);
+    pub fn get_last_update_timestamp(&self) -> Option<u64> {
+        self.last_tree_update
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
     }
 
-    #[test]
-    fn test_hash_store_add_and_contains() {
-        let store = HashStore::<4, 0>::new();
-        let hash = [1u8; 64];
-
-        assert!(!store.contains(&hash));
-        store.add_hash(hash);
-        assert!(store.contains(&hash));
-        assert_eq!(store.len(), 1);
+    pub fn get_merkle_tree_size(&self) -> usize {
+        self.merkle_tree
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|tree| tree.size())
+            .unwrap_or(0)
     }
 
-    #[test]
-    fn test_hash_store_to_array() {
-        let store = HashStore::<4, 0>::new();
-        let hash1 = [1u8; 64];
-        let hash2 = [2u8; 64];
-
-        store.add_hash(hash1);
-        store.add_hash(hash2);
-
-        let array = store.to_array();
-        assert_eq!(array.len(), 2);
-        assert!(array.data.contains(&hash1));
-        assert!(array.data.contains(&hash2));
-    }
-
-    #[test]
-    fn test_hash_store_collision() {
-        let store = HashStore::<1, 0>::new(); // Only 2 buckets, will cause collisions
-        let hash1 = [1u8; 64];
-        let hash2 = [2u8; 64];
-        let hash3 = [3u8; 64];
-
-        store.add_hash(hash1);
-        store.add_hash(hash2);
-        store.add_hash(hash3);
-
-        assert_eq!(store.len(), 3);
-        assert!(store.contains(&hash1));
-        assert!(store.contains(&hash2));
-        assert!(store.contains(&hash3));
+    pub fn get_merkle_tree_root(&self) -> Option<Hash512> {
+        self.merkle_tree
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|tree| tree.root())
     }
 }

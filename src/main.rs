@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 mod storage;
-use crate::storage::HashStore;
+use crate::storage::TimestampingService;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct AddHashRequest {
@@ -20,6 +20,7 @@ struct AddHashRequest {
 struct AddHashResponse {
     success: bool,
     message: String,
+    is_new: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +33,15 @@ struct CheckHashResponse {
     success: bool,
     message: String,
     exists: bool,
+    merkle_proof: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateTreeResponse {
+    success: bool,
+    message: String,
+    tree_size: usize,
+    hash_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,16 +49,17 @@ struct GetStatsResponse {
     count: usize,
     slots: usize,
     total_slots: usize,
+    merkle_tree_size: usize,
+    merkle_tree_root: Option<String>,
+    last_tree_update: Option<u64>,
 }
 
 const INDEX_SIZE: usize = 16;
 const PREFIX_SIZE: usize = 0;
 
-
-
 #[tokio::main]
 async fn main() {
-    let hash_store = Arc::new(HashStore::<INDEX_SIZE, PREFIX_SIZE>::new());
+    let timestamping_service = Arc::new(TimestampingService::<INDEX_SIZE, PREFIX_SIZE>::new());
 
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
@@ -58,12 +69,16 @@ async fn main() {
     let app = Router::new()
         .route("/add", post(add))
         .route("/check", post(check))
+        .route("/update-tree", post(update_tree))
         .route("/stats", get(get_stats))
         .layer(cors)
-        .with_state(hash_store);
+        .with_state(timestamping_service);
 
     println!("Server starting on http://127.0.0.1:3000");
     println!("POST /add - Add a 512-bit hash");
+    println!("POST /check - Check if hash exists and get merkle proof");
+    println!("POST /update-tree - Update the merkle tree");
+    println!("GET /stats - Get storage statistics");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
@@ -89,13 +104,20 @@ mod tests {
         assert!(!store.contains(&hash1));
 
         // Add hashes
-        store.add_hash(hash1);
+        let is_new1 = store.add_hash(hash1);
+        assert!(is_new1);
         assert_eq!(store.len(), 1);
         assert!(store.contains(&hash1));
 
-        store.add_hash(hash2);
+        let is_new2 = store.add_hash(hash2);
+        assert!(is_new2);
         assert_eq!(store.len(), 2);
         assert!(store.contains(&hash2));
+
+        // Test duplicate hash
+        let is_new_duplicate = store.add_hash(hash1);
+        assert!(!is_new_duplicate);
+        assert_eq!(store.len(), 2);
 
         // Test to_array
         let array = store.to_array();
@@ -106,7 +128,7 @@ mod tests {
 }
 
 async fn add(
-    axum::extract::State(hash_store): axum::extract::State<Arc<HashStore<INDEX_SIZE, PREFIX_SIZE>>>,
+    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
     Json(payload): Json<AddHashRequest>,
 ) -> (StatusCode, Json<AddHashResponse>) {
     // Validate hash length (512 bits = 64 bytes = 128 hex characters)
@@ -116,6 +138,7 @@ async fn add(
             Json(AddHashResponse {
                 success: false,
                 message: "Hash must be exactly 128 characters (512 bits)".to_string(),
+                is_new: false,
             }),
         );
     }
@@ -127,24 +150,55 @@ async fn add(
             Json(AddHashResponse {
                 success: false,
                 message: "Hash must be in hexadecimal format".to_string(),
+                is_new: false,
             }),
         );
     }
 
-    let hash_bytes = hex::decode(payload.hash).unwrap().try_into().unwrap();
-    hash_store.add_hash(hash_bytes);
+    let hash_bytes = match hex::decode(&payload.hash) {
+        Ok(bytes) => match bytes.try_into() {
+            Ok(hash_array) => hash_array,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(AddHashResponse {
+                        success: false,
+                        message: "Invalid hash length".to_string(),
+                        is_new: false,
+                    }),
+                );
+            }
+        },
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(AddHashResponse {
+                    success: false,
+                    message: "Invalid hex format".to_string(),
+                    is_new: false,
+                }),
+            );
+        }
+    };
+
+    let is_new = service.hash_store.add_hash(hash_bytes);
 
     (
         StatusCode::OK,
         Json(AddHashResponse {
             success: true,
-            message: "Hash added successfully".to_string(),
+            message: if is_new {
+                "Hash added successfully".to_string()
+            } else {
+                "Hash already exists".to_string()
+            },
+            is_new,
         }),
     )
 }
 
 async fn check(
-    axum::extract::State(hash_store): axum::extract::State<Arc<HashStore<INDEX_SIZE, PREFIX_SIZE>>>,
+    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
     Json(payload): Json<CheckHashRequest>,
 ) -> (StatusCode, Json<CheckHashResponse>) {
     // Validate hash length (512 bits = 64 bytes = 128 hex characters)
@@ -155,6 +209,7 @@ async fn check(
                 success: false,
                 message: "Hash must be exactly 128 characters (512 bits)".to_string(),
                 exists: false,
+                merkle_proof: None,
             }),
         );
     }
@@ -167,12 +222,49 @@ async fn check(
                 success: false,
                 message: "Hash must be in hexadecimal format".to_string(),
                 exists: false,
+                merkle_proof: None,
             }),
         );
     }
 
-    let hash_bytes = hex::decode(payload.hash).unwrap().try_into().unwrap();
-    let exists = hash_store.contains(&hash_bytes);
+    let hash_bytes = match hex::decode(&payload.hash) {
+        Ok(bytes) => match bytes.try_into() {
+            Ok(hash_array) => hash_array,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(CheckHashResponse {
+                        success: false,
+                        message: "Invalid hash length".to_string(),
+                        exists: false,
+                        merkle_proof: None,
+                    }),
+                );
+            }
+        },
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(CheckHashResponse {
+                    success: false,
+                    message: "Invalid hex format".to_string(),
+                    exists: false,
+                    merkle_proof: None,
+                }),
+            );
+        }
+    };
+
+    let exists = service.hash_store.contains(&hash_bytes);
+    let merkle_proof = if exists {
+        service.get_merkle_proof(&hash_bytes).map(|proof| {
+            proof.into_iter()
+                .map(|(left, right)| (hex::encode(left), hex::encode(right)))
+                .collect()
+        })
+    } else {
+        None
+    };
 
     (
         StatusCode::OK,
@@ -184,17 +276,39 @@ async fn check(
                 "Hash not found in store".to_string()
             },
             exists,
+            merkle_proof,
+        }),
+    )
+}
+
+async fn update_tree(
+    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
+) -> (StatusCode, Json<UpdateTreeResponse>) {
+    let hash_count = service.hash_store.len();
+    service.update_merkle_tree();
+    let tree_size = service.get_merkle_tree_size();
+
+    (
+        StatusCode::OK,
+        Json(UpdateTreeResponse {
+            success: true,
+            message: format!("Merkle tree updated with {} hashes", hash_count),
+            tree_size,
+            hash_count,
         }),
     )
 }
 
 async fn get_stats(
-    axum::extract::State(hash_store): axum::extract::State<Arc<HashStore<INDEX_SIZE, PREFIX_SIZE>>>,
+    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
 ) -> (StatusCode, Json<GetStatsResponse>) {
     let stats = GetStatsResponse {
-        count: hash_store.len(),
-        slots: hash_store.occupied_slots(),
+        count: service.hash_store.len(),
+        slots: service.hash_store.occupied_slots(),
         total_slots: 1 << INDEX_SIZE,
+        merkle_tree_size: service.get_merkle_tree_size(),
+        merkle_tree_root: service.get_merkle_tree_root().map(|root| hex::encode(root)),
+        last_tree_update: service.get_last_update_timestamp(),
     };
     (StatusCode::OK, Json(stats))
 }
