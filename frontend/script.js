@@ -603,9 +603,17 @@ async function verifyMerkleProof(leafHash, proof, expectedRoot) {
                 operation = 'Concatenate as right child with left sibling';
             }
             
-            // Concatenate and hash
-            const combined = leftHash + rightHash;
-            const hashBuffer = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(combined));
+            // Convert hex strings to byte arrays
+            const leftBytes = new Uint8Array(leftHash.match(/.{2}/g).map(byte => parseInt(byte, 16)));
+            const rightBytes = new Uint8Array(rightHash.match(/.{2}/g).map(byte => parseInt(byte, 16)));
+            
+            // Concatenate byte arrays (same as backend hasher.update() calls)
+            const combined = new Uint8Array(leftBytes.length + rightBytes.length);
+            combined.set(leftBytes);
+            combined.set(rightBytes, leftBytes.length);
+            
+            // Hash the concatenated bytes
+            const hashBuffer = await crypto.subtle.digest('SHA-512', combined);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
             const newHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
             
