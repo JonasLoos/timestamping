@@ -50,20 +50,19 @@ impl Hash512Ops for Hash512 {
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        // Convert [u64; 8] to Vec<u8>
-        let mut bytes = Vec::with_capacity(64);
-        for &u64_val in self {
-            bytes.extend_from_slice(&u64_val.to_le_bytes());
-        }
-        bytes
+        self.iter().flat_map(|&u64_val| u64_val.to_le_bytes()).collect()
     }
 
     fn to_index(&self, prefix_size: usize, index_size: usize) -> usize {
         // Extract index_size bits starting from prefix_size, assuming prefix_size + index_size <= 64
+        if prefix_size + index_size > 64 {
+            panic!("Prefix size + index size must be less than or equal to 64");
+        }
+
         let bit_start = prefix_size % 64;
         let u64_val = self[0]; // Only use the first u64
 
-        let mask = if index_size >= 64 {
+        let mask = if index_size == 64 {
             u64::MAX
         } else {
             (1u64 << index_size) - 1
@@ -203,6 +202,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
         }
 
         // Sort the hashes for consistent merkle tree construction
+        // TODO: remove
         hashes.sort();
 
         HashArray { data: hashes }
@@ -216,8 +216,8 @@ pub struct MultiThreadedHashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: us
 
 #[derive(Debug)]
 enum HashCommand {
-    AddHash(Vec<u8>), // raw bytes
-    Contains(Vec<u8>, Sender<bool>), // raw bytes
+    AddHash(Hash512),
+    Contains(Hash512, Sender<bool>),
     GetArray(Sender<HashArray>),
     GetLen(Sender<usize>),
     GetOccupiedSlots(Sender<usize>),
@@ -225,6 +225,10 @@ enum HashCommand {
 
 impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<INDEX_SIZE, PREFIX_SIZE> {
     pub fn new(num_threads: usize) -> Self {
+        // Ensure num_threads is a power of 2
+        if !num_threads.is_power_of_two() {
+            panic!("Number of threads must be a power of 2");
+        }
         let mut threads = Vec::new();
 
         for _ in 0..num_threads {
@@ -246,19 +250,11 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
     fn hash_store_worker(store: HashStore<INDEX_SIZE, PREFIX_SIZE>, rx: Receiver<HashCommand>) {
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                HashCommand::AddHash(hash_bytes) => {
-                    // Convert raw bytes to hash array in the worker thread
-                    if let Ok(hash_array) = Hash512::from_bytes(&hash_bytes) {
-                        let _is_new = store.add_hash(hash_array);
-                    }
+                HashCommand::AddHash(hash) => {
+                    let _is_new = store.add_hash(hash);
                 }
-                HashCommand::Contains(hash_bytes, tx) => {
-                    // Convert raw bytes to hash array in the worker thread
-                    let exists = if let Ok(hash_array) = Hash512::from_bytes(&hash_bytes) {
-                        store.contains(&hash_array)
-                    } else {
-                        false
-                    };
+                HashCommand::Contains(hash, tx) => {
+                    let exists = store.contains(&hash);
                     let _ = tx.send(exists);
                 }
                 HashCommand::GetArray(tx) => {
@@ -277,37 +273,22 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
         }
     }
 
-    fn get_thread_index(&self, hash_bytes: &[u8]) -> usize {
-        // Convert raw bytes to get the hash for thread distribution
-        let hash: Hash512 = if let Ok(hash_array) = Hash512::from_bytes(hash_bytes) {
-            hash_array
-        } else {
-            return 0; // fallback to first thread
-        };
-
-        // Use the first bits to determine which thread to use
-        let num_threads = self.threads.len();
-        let bits_needed = (num_threads as f64).log2().ceil() as usize;
-        hash.to_index(0, bits_needed) % num_threads
-    }
-
-    pub fn add_hash(&self, hash_bytes: Vec<u8>) -> bool {
-        let thread_index = self.get_thread_index(&hash_bytes);
+    pub fn add_hash(&self, hash: Hash512) -> bool {
+        let thread_index = hash.to_index(0, (self.threads.len() as f64).log2().ceil() as usize);
         let tx = &self.threads[thread_index];
 
-        // Send the raw bytes to the appropriate thread
-        let _ = tx.send(HashCommand::AddHash(hash_bytes));
+        let _ = tx.send(HashCommand::AddHash(hash));
 
-        // For simplicity, we'll assume it's new (we could add a response channel if needed)
+        // TODO: return the result of the add_hash operation
         true
     }
 
-    pub fn contains(&self, hash_bytes: &[u8]) -> bool {
-        let thread_index = self.get_thread_index(hash_bytes);
+    pub fn contains(&self, hash: &Hash512) -> bool {
+        let thread_index = hash.to_index(0, (self.threads.len() as f64).log2().ceil() as usize);
         let tx = &self.threads[thread_index];
         let (response_tx, response_rx) = channel();
 
-        let _ = tx.send(HashCommand::Contains(hash_bytes.to_vec(), response_tx));
+        let _ = tx.send(HashCommand::Contains(*hash, response_tx));
         response_rx.recv().unwrap_or(false)
     }
 
@@ -382,17 +363,8 @@ impl HashArray {
                 let right_child_idx = child_level_start + 2 * i + 1;
 
                 let mut hasher = Sha512::new();
-                // Convert [u64; 8] to bytes for hashing
-                let mut left_bytes = Vec::with_capacity(64);
-                for &u64_val in &tree_data[left_child_idx] {
-                    left_bytes.extend_from_slice(&u64_val.to_le_bytes());
-                }
-                let mut right_bytes = Vec::with_capacity(64);
-                for &u64_val in &tree_data[right_child_idx] {
-                    right_bytes.extend_from_slice(&u64_val.to_le_bytes());
-                }
-                hasher.update(&left_bytes);
-                hasher.update(&right_bytes);
+                hasher.update(&tree_data[left_child_idx].to_bytes());
+                hasher.update(&tree_data[right_child_idx].to_bytes());
                 let result = hasher.finalize();
 
                 // Convert result back to [u64; 8]
@@ -507,10 +479,10 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
         *self.last_tree_update.write().unwrap() = Some(SystemTime::now());
     }
 
-    pub fn get_merkle_proof(&self, hash_bytes: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+    pub fn get_merkle_proof(&self, hash: &Hash512) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
         self.merkle_tree
         .read().unwrap().as_ref()?
-        .get(&Hash512::from_bytes(hash_bytes).unwrap())
+        .get(hash)
         .map(|proof| {
             proof.into_iter()
                 .map(|(left, right)| (left.to_bytes(), right.to_bytes()))

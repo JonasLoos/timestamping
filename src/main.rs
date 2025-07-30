@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 mod storage;
-use crate::storage::TimestampingService;
+use crate::storage::{TimestampingService, Hash512, Hash512Ops};
 
 #[derive(Debug, Serialize)]
 struct AddResponse {
@@ -114,9 +114,8 @@ async fn add(
     for i in 0..total_hashes {
         let start = i * 64;
         let end = start + 64;
-        let hash_bytes = bytes[start..end].to_vec();
-
-        let is_new = service.hash_store.add_hash(hash_bytes);
+        let hash = Hash512::from_bytes(&bytes[start..end]).unwrap();
+        let is_new = service.hash_store.add_hash(hash);
         if is_new {
             new_hashes += 1;
         } else {
@@ -158,9 +157,10 @@ async fn check(
         );
     }
 
-    let exists = service.hash_store.contains(&bytes);
+    let hash = Hash512::from_bytes(&bytes).unwrap();
+    let exists = service.hash_store.contains(&hash);
     let merkle_proof = if exists {
-        service.get_merkle_proof(&bytes.to_vec())
+        service.get_merkle_proof(&hash)
     } else {
         None
     };
