@@ -38,13 +38,10 @@ impl Hash512Ops for Hash512 {
         let mut hash_array = [0u64; 8];
         for i in 0..8 {
             let start = i * 8;
-            let end = start + 8;
-            if end <= bytes.len() {
-                hash_array[i] = u64::from_le_bytes([
-                    bytes[start], bytes[start + 1], bytes[start + 2], bytes[start + 3],
-                    bytes[start + 4], bytes[start + 5], bytes[start + 6], bytes[start + 7]
-                ]);
-            }
+            hash_array[i] = u64::from_le_bytes([
+                bytes[start], bytes[start + 1], bytes[start + 2], bytes[start + 3],
+                bytes[start + 4], bytes[start + 5], bytes[start + 6], bytes[start + 7]
+            ]);
         }
         Ok(hash_array)
     }
@@ -360,16 +357,7 @@ impl HashArray {
                 hasher.update(&tree_data[right_child_idx].to_bytes());
                 let result = hasher.finalize();
 
-                // Convert result back to [u64; 8]
-                let mut parent_hash = [0u64; 8];
-                for i in 0..8 {
-                    let start = i * 8;
-                    parent_hash[i] = u64::from_le_bytes([
-                        result[start], result[start + 1], result[start + 2], result[start + 3],
-                        result[start + 4], result[start + 5], result[start + 6], result[start + 7]
-                    ]);
-                }
-                tree_data[parent_idx] = parent_hash;
+                tree_data[parent_idx] = Hash512::from_bytes(&result).unwrap();
             }
         }
 
