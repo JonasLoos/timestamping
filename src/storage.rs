@@ -201,10 +201,6 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
             }
         }
 
-        // Sort the hashes for consistent merkle tree construction
-        // TODO: remove
-        hashes.sort();
-
         HashArray { data: hashes }
     }
 }
@@ -323,9 +319,6 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
                 all_hashes.extend(array.data);
             }
         }
-
-        // Sort all hashes for consistent merkle tree construction
-        all_hashes.sort();
 
         HashArray { data: all_hashes }
     }
