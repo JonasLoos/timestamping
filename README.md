@@ -111,7 +111,7 @@ The project includes a web server that accepts POST requests to add hashes:
 cargo run
 
 # Add a hash via HTTP
-curl -X POST http://localhost:3000/add \
+curl -X POST http://localhost:3427/add \
   -H "Content-Type: application/json" \
   -d '{"hash": "0123456789abcdef..."}'
 ```

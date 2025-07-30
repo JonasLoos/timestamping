@@ -1,7 +1,6 @@
-import requests
 import base64
 
-target_url = "http://localhost:3000"
+target_url = "http://localhost:3427"
 
 
 import asyncio

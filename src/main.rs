@@ -20,7 +20,7 @@ struct AddHashRequest {
 #[derive(Debug, Serialize)]
 struct AddHashResponse {
     success: bool,
-    message: String,
+    message: &'static str,
     is_new: bool,
 }
 
@@ -32,7 +32,7 @@ struct CheckHashRequest {
 #[derive(Debug, Serialize)]
 struct CheckHashResponse {
     success: bool,
-    message: String,
+    message: &'static str,
     exists: bool,
     merkle_proof: Option<Vec<(String, String)>>, // base64 encoded bytes
 }
@@ -58,6 +58,14 @@ struct GetStatsResponse {
 const INDEX_SIZE: usize = 28;
 const PREFIX_SIZE: usize = 0;
 
+// Pre-allocated response messages
+const MSG_HASH_ADDED: &str = "Hash added successfully";
+const MSG_HASH_EXISTS: &str = "Hash already exists";
+const MSG_HASH_FOUND: &str = "Hash found in store";
+const MSG_HASH_NOT_FOUND: &str = "Hash not found in store";
+const MSG_INVALID_LENGTH: &str = "Invalid hash length - must be 64 bytes";
+const MSG_INVALID_BASE64: &str = "Invalid base64 format";
+
 #[tokio::main]
 async fn main() {
     let timestamping_service = Arc::new(TimestampingService::<INDEX_SIZE, PREFIX_SIZE>::new());
@@ -75,13 +83,13 @@ async fn main() {
         .layer(cors)
         .with_state(timestamping_service);
 
-    println!("Server starting on http://127.0.0.1:3000");
+    println!("Server starting on http://127.0.0.1:3427");
     println!("POST /add - Add a 512-bit hash");
     println!("POST /check - Check if hash exists and get merkle proof");
     println!("POST /update-tree - Update the merkle tree");
     println!("GET /stats - Get storage statistics");
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3427")
         .await
         .unwrap();
 
@@ -141,7 +149,7 @@ async fn add(
                     StatusCode::BAD_REQUEST,
                     Json(AddHashResponse {
                         success: false,
-                        message: "Invalid hash length - must be 64 bytes".to_string(),
+                        message: MSG_INVALID_LENGTH,
                         is_new: false,
                     }),
                 );
@@ -152,7 +160,7 @@ async fn add(
                 StatusCode::BAD_REQUEST,
                 Json(AddHashResponse {
                     success: false,
-                    message: "Invalid base64 format".to_string(),
+                    message: MSG_INVALID_BASE64,
                     is_new: false,
                 }),
             );
@@ -165,11 +173,7 @@ async fn add(
         StatusCode::OK,
         Json(AddHashResponse {
             success: true,
-            message: if is_new {
-                "Hash added successfully".to_string()
-            } else {
-                "Hash already exists".to_string()
-            },
+            message: if is_new { MSG_HASH_ADDED } else { MSG_HASH_EXISTS },
             is_new,
         }),
     )
@@ -188,7 +192,7 @@ async fn check(
                     StatusCode::BAD_REQUEST,
                     Json(CheckHashResponse {
                         success: false,
-                        message: "Invalid hash length - must be 64 bytes".to_string(),
+                        message: MSG_INVALID_LENGTH,
                         exists: false,
                         merkle_proof: None,
                     }),
@@ -200,7 +204,7 @@ async fn check(
                 StatusCode::BAD_REQUEST,
                 Json(CheckHashResponse {
                     success: false,
-                    message: "Invalid base64 format".to_string(),
+                    message: MSG_INVALID_BASE64,
                     exists: false,
                     merkle_proof: None,
                 }),
@@ -223,11 +227,7 @@ async fn check(
         StatusCode::OK,
         Json(CheckHashResponse {
             success: true,
-            message: if exists {
-                "Hash found in store".to_string()
-            } else {
-                "Hash not found in store".to_string()
-            },
+            message: if exists { MSG_HASH_FOUND } else { MSG_HASH_NOT_FOUND },
             exists,
             merkle_proof,
         }),

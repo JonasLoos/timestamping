@@ -206,9 +206,7 @@ impl HashArray {
 
         // Copy data to leaves (rightmost part of the tree)
         let leaf_start = (1 << depth) - 1;
-        for (i, &hash) in self.data.iter().enumerate() {
-            tree_data[leaf_start + i] = hash;
-        }
+        tree_data[leaf_start..leaf_start + n].copy_from_slice(&self.data[..n]);
 
         // Build tree from bottom up
         for level in (0..depth).rev() {
