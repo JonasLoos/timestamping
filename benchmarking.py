@@ -24,9 +24,9 @@ async def send_batch_request(session, hashes_batch):
     """Send a batch of hashes to the server as raw bytes"""
     # Concatenate all hashes into a single byte array
     batch_bytes = b''.join(hashes_batch)
-    
+
     async with session.post(
-        f"{target_url}/add-batch", 
+        f"{target_url}/add",
         data=batch_bytes,
         headers={"Content-Type": "application/octet-stream"}
     ) as response:
@@ -43,7 +43,7 @@ async def worker_batch(session, semaphore, hash_queue, completed_counter, batch_
                 batch.append(hash_data)
             except asyncio.QueueEmpty:
                 break
-        
+
         if not batch:
             break
 

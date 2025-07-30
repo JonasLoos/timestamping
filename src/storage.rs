@@ -33,7 +33,7 @@ impl Hash512Ops for Hash512 {
         if bytes.len() != 64 {
             return Err(Hash512Error::InvalidLengthError);
         }
-        
+
         // Convert Vec<u8> to [u64; 8] by reading 8 bytes at a time
         let mut hash_array = [0u64; 8];
         for i in 0..8 {
@@ -62,13 +62,13 @@ impl Hash512Ops for Hash512 {
         // Extract index_size bits starting from prefix_size, assuming prefix_size + index_size <= 64
         let bit_start = prefix_size % 64;
         let u64_val = self[0]; // Only use the first u64
-        
+
         let mask = if index_size >= 64 {
             u64::MAX
         } else {
             (1u64 << index_size) - 1
         };
-        
+
         let extracted = (u64_val >> bit_start) & mask;
         extracted as usize
     }
@@ -507,24 +507,11 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
         *self.last_tree_update.write().unwrap() = Some(SystemTime::now());
     }
 
-    pub fn get_merkle_proof(&self, hash: &Hash512) -> Option<Vec<(Hash512, Hash512)>> {
-        let tree = self.merkle_tree.read().unwrap();
-        tree.as_ref()?.get(hash)
-    }
-
-    pub fn get_merkle_proof_from_bytes(&self, hash_bytes: &[u8]) -> Option<Vec<(Hash512, Hash512)>> {
-        // Convert raw bytes to hash array in the service
-        if let Ok(hash_array) = Hash512::from_bytes(hash_bytes) {
-            let tree = self.merkle_tree.read().unwrap();
-            tree.as_ref()?.get(&hash_array)
-        } else {
-            None
-        }
-    }
-
-    pub fn get_merkle_proof_bytes_encoded(&self, hash_bytes: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
-        // Get the raw proof and return as raw bytes
-        self.get_merkle_proof_from_bytes(hash_bytes).map(|proof| {
+    pub fn get_merkle_proof(&self, hash_bytes: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.merkle_tree
+        .read().unwrap().as_ref()?
+        .get(&Hash512::from_bytes(hash_bytes).unwrap())
+        .map(|proof| {
             proof.into_iter()
                 .map(|(left, right)| (left.to_bytes(), right.to_bytes()))
                 .collect()

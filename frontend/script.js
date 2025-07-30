@@ -75,7 +75,7 @@ fileInputLabel.addEventListener('drop', (e) => {
     e.preventDefault();
     fileInputLabel.style.borderColor = '#ddd';
     fileInputLabel.style.background = '#f8f9fa';
-    
+
     const files = e.dataTransfer.files;
     if (files.length > 0) {
         fileInput.files = files;
@@ -94,9 +94,9 @@ async function handleFilesSelect() {
     fileHashes.clear();
     fileStatuses.clear();
     fileProofs.clear();
-    
+
     showFilesInfo(files);
-    
+
     // Calculate hashes for all files
     for (const file of files) {
         updateFileStatus(file.name, 'upload', 'processing', 'Calculating hash...', '');
@@ -110,7 +110,7 @@ async function handleFilesSelect() {
             updateFileStatus(file.name, 'upload', 'error', `Error: ${error.message}`, '');
         }
     }
-    
+
     if (fileHashes.size > 0) {
         enableButtons();
         // Auto-check all hashes after calculating them
@@ -122,14 +122,14 @@ function showFilesInfo(files) {
     // Clear existing tabs
     tabsHeader.innerHTML = '';
     tabsContent.innerHTML = '';
-    
+
     files.forEach((file, index) => {
         // Initialize status for this file
         fileStatuses.set(file.name, {
             upload: { status: 'pending', message: 'Not uploaded', timestamp: '' },
             check: { status: 'pending', message: 'Not checked', timestamp: '' }
         });
-        
+
         // Create tab button
         const tabButton = document.createElement('button');
         tabButton.className = 'tab-button';
@@ -137,7 +137,7 @@ function showFilesInfo(files) {
         tabButton.dataset.filename = file.name;
         tabButton.addEventListener('click', () => switchTab(file.name));
         tabsHeader.appendChild(tabButton);
-        
+
         // Create tab content
         const tabContentDiv = document.createElement('div');
         tabContentDiv.className = 'tab-content';
@@ -167,13 +167,13 @@ function showFilesInfo(files) {
             </div>
         `;
         tabsContent.appendChild(tabContentDiv);
-        
+
         // Activate first tab
         if (index === 0) {
             switchTab(file.name);
         }
     });
-    
+
     filesTabsSection.style.display = 'block';
 }
 
@@ -181,11 +181,11 @@ function switchTab(filename) {
     // Remove active class from all tabs and content
     document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-    
+
     // Add active class to selected tab and content
     const tabButton = document.querySelector(`[data-filename="${filename}"]`);
     const tabContent = document.getElementById(`tab-${filename}`);
-    
+
     if (tabButton && tabContent) {
         tabButton.classList.add('active');
         tabContent.classList.add('active');
@@ -197,7 +197,7 @@ function updateFileStatus(fileName, type, status, message, timestamp, merkleProo
     if (!timestamp) {
         timestamp = new Date().toLocaleTimeString();
     }
-    
+
     // Update in memory
     if (!fileStatuses.has(fileName)) {
         fileStatuses.set(fileName, {
@@ -205,27 +205,27 @@ function updateFileStatus(fileName, type, status, message, timestamp, merkleProo
             check: { status: 'pending', message: 'Not checked', timestamp: '' }
         });
     }
-    
+
     fileStatuses.get(fileName)[type] = { status, message, timestamp };
-    
+
     // Store merkle proof if provided
     if (merkleProof) {
         fileProofs.set(fileName, merkleProof);
     }
-    
+
     // Update DOM
     const statusElement = document.getElementById(`${type}-status-${fileName}`);
     if (statusElement) {
         statusElement.className = `status-item ${status}`;
         statusElement.querySelector('.status-value').textContent = message;
         statusElement.querySelector('.status-timestamp').textContent = timestamp;
-        
+
         // Remove existing proof button
         const existingButton = statusElement.querySelector('.proof-button');
         if (existingButton) {
             existingButton.remove();
         }
-        
+
         // Add proof button if merkle proof is available
         if (merkleProof && merkleProof.length > 0) {
             const proofButton = document.createElement('button');
@@ -333,20 +333,20 @@ async function addAllHashesToStore() {
 
         // Use batch endpoint for better performance
         const hashes = Array.from(fileHashes.values()); // These are now raw bytes
-        
+
         // Update all files to processing status
         for (const fileName of fileHashes.keys()) {
             updateFileStatus(fileName, 'upload', 'processing', 'Adding to store...', '');
         }
-        
+
         // Concatenate all hashes into a single Uint8Array
         const totalBytes = hashes.length * 64;
         const batchBytes = new Uint8Array(totalBytes);
         hashes.forEach((hashBytes, index) => {
             batchBytes.set(hashBytes, index * 64);
         });
-        
-        const response = await fetch(`${API_BASE_URL}/add-batch`, {
+
+        const response = await fetch(`${API_BASE_URL}/add`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/octet-stream',
@@ -361,7 +361,7 @@ async function addAllHashesToStore() {
             for (const fileName of fileHashes.keys()) {
                 updateFileStatus(fileName, 'upload', 'success', 'Successfully added to store', '');
             }
-            
+
             // Show batch summary
             console.log(`Batch processed: ${result.total_hashes} total, ${result.new_hashes} new, ${result.existing_hashes} existing`);
         } else {
@@ -393,11 +393,11 @@ async function checkAllHashes() {
 
         for (const [fileName, hashBytes] of fileHashes) {
             updateFileStatus(fileName, 'check', 'processing', 'Checking in store...', '');
-            
+
             try {
                 // Convert JavaScript array to Uint8Array for raw bytes
                 const hashUint8Array = new Uint8Array(hashBytes);
-                
+
                 const response = await fetch(`${API_BASE_URL}/check`, {
                     method: 'POST',
                     headers: {
@@ -410,8 +410,8 @@ async function checkAllHashes() {
 
                 if (response.ok && result.success) {
                     if (result.exists) {
-                        const proofInfo = result.merkle_proof ? 
-                            ` (${result.merkle_proof.length} proof levels)` : 
+                        const proofInfo = result.merkle_proof ?
+                            ` (${result.merkle_proof.length} proof levels)` :
                             ' (no proof available)';
                         updateFileStatus(fileName, 'check', 'success', `Found in store${proofInfo}`, '', result.merkle_proof);
                     } else {
@@ -455,7 +455,7 @@ async function updateMerkleTree() {
 async function refreshStats() {
     try {
         refreshStatsBtn.disabled = true;
-        
+
         const response = await fetch(`${API_BASE_URL}/stats`, {
             method: 'GET',
             headers: {
@@ -465,18 +465,18 @@ async function refreshStats() {
 
         if (response.ok) {
             const stats = await response.json();
-            
+
             totalHashes.textContent = stats.count.toLocaleString();
             occupiedSlots.textContent = stats.slots.toLocaleString();
             totalSlots.textContent = stats.total_slots.toLocaleString();
-            
+
             // Calculate load factor as percentage
             const loadFactorPercent = ((stats.slots / stats.total_slots) * 100).toFixed(2);
             loadFactor.textContent = `${loadFactorPercent}%`;
 
             // Merkle tree stats
             merkleTreeSize.textContent = stats.merkle_tree_size.toLocaleString();
-            
+
             if (stats.merkle_tree_root) {
                 // Convert raw bytes to hex for display
                 const rootHex = Array.from(stats.merkle_tree_root).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -505,14 +505,14 @@ async function refreshStats() {
 
 async function checkManualHash() {
     const hashInput = manualHashInput.value.trim();
-    
+
     if (!hashInput) {
         showManualResult('error', 'No hash provided', 'Please enter a hash to check');
         return;
     }
 
     let hashBytes;
-    
+
     // Try to parse as hex first (for backward compatibility)
     try {
         const decodedBytes = hexToBytes(hashInput);
@@ -590,7 +590,7 @@ function showManualResult(type, title, message, merkleProof = null) {
             </div>
         `;
     }
-    
+
     manualCheckResult.className = `manual-result ${type}`;
     manualCheckResult.innerHTML = `
         <h4>${title}</h4>
@@ -604,19 +604,19 @@ function showManualResult(type, title, message, merkleProof = null) {
 function showProofModal(fileName) {
     const proof = fileProofs.get(fileName);
     const hash = fileHashes.get(fileName);
-    
+
     if (!proof || !hash) {
         return;
     }
-    
+
     // Set basic info
     proofFileName.textContent = fileName;
     proofFileHash.textContent = bytesToHex(hash); // Display hex for proof modal
     proofExpectedRoot.textContent = currentMerkleRoot || 'Not available';
-    
+
     // Show modal
     proofModal.style.display = 'block';
-    
+
     // Verify proof
     verifyMerkleProof(hash, proof, currentMerkleRoot);
 }
@@ -630,11 +630,11 @@ async function verifyMerkleProof(leafHashBytes, proof, expectedRoot) {
     verificationResult.className = 'verification-result';
     verificationDetails.textContent = '';
     proofSteps.innerHTML = '';
-    
+
     try {
         let currentHashBytes = leafHashBytes;
         const steps = [];
-        
+
         // Add initial step
         steps.push({
             stepNumber: 0,
@@ -645,12 +645,12 @@ async function verifyMerkleProof(leafHashBytes, proof, expectedRoot) {
             result: bytesToHex(currentHashBytes),
             isCurrent: true
         });
-        
+
         // Process each proof level
         for (let i = 0; i < proof.length; i++) {
             const [leftSiblingBytes, rightSiblingBytes] = proof[i]; // These are now raw bytes
             let leftHashBytes, rightHashBytes, operation;
-            
+
             // Determine if current hash is left or right child
             if (arraysEqual(leftSiblingBytes, currentHashBytes)) {
                 // Current hash is the left child
@@ -663,17 +663,17 @@ async function verifyMerkleProof(leafHashBytes, proof, expectedRoot) {
                 rightHashBytes = currentHashBytes;
                 operation = 'Concatenate as right child with left sibling';
             }
-            
+
             // Concatenate byte arrays (same as backend hasher.update() calls)
             const combined = new Uint8Array(leftHashBytes.length + rightHashBytes.length);
             combined.set(leftHashBytes);
             combined.set(rightHashBytes, leftHashBytes.length);
-            
+
             // Hash the concatenated bytes
             const hashBuffer = await crypto.subtle.digest('SHA-512', combined);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
             const newHashBytes = hashArray;
-            
+
             steps.push({
                 stepNumber: i + 1,
                 operation: operation,
@@ -683,23 +683,23 @@ async function verifyMerkleProof(leafHashBytes, proof, expectedRoot) {
                 result: bytesToHex(newHashBytes),
                 isCurrent: false
             });
-            
+
             currentHashBytes = newHashBytes;
         }
-        
+
         // Mark last step as current
         if (steps.length > 1) {
             steps[steps.length - 1].isCurrent = true;
             steps[0].isCurrent = false;
         }
-        
+
         // Display all steps
         displayProofSteps(steps);
-        
+
         // Check if computed root matches expected root
         const computedRootHex = bytesToHex(currentHashBytes);
         const isValid = computedRootHex === expectedRoot;
-        
+
         if (isValid) {
             verificationResult.className = 'verification-result success';
             verificationStatus.textContent = '✓ Proof Verified Successfully';
@@ -709,7 +709,7 @@ async function verifyMerkleProof(leafHashBytes, proof, expectedRoot) {
             verificationStatus.textContent = '✗ Proof Verification Failed';
             verificationDetails.textContent = `The computed root hash (${computedRootHex.substring(0, 16)}...${computedRootHex.substring(computedRootHex.length - 16)}) does not match the expected root. This could indicate the proof is invalid or the merkle tree has been updated.`;
         }
-        
+
     } catch (error) {
         verificationResult.className = 'verification-result error';
         verificationStatus.textContent = '✗ Verification Error';
@@ -720,11 +720,11 @@ async function verifyMerkleProof(leafHashBytes, proof, expectedRoot) {
 
 function displayProofSteps(steps) {
     proofSteps.innerHTML = '';
-    
+
     steps.forEach((step, index) => {
         const stepDiv = document.createElement('div');
         stepDiv.className = `proof-step ${step.isCurrent ? 'current' : ''}`;
-        
+
         if (step.stepNumber === 0) {
             // Initial step
             stepDiv.innerHTML = `
@@ -750,7 +750,7 @@ function displayProofSteps(steps) {
                 <div class="step-result">${step.result}</div>
             `;
         }
-        
+
         proofSteps.appendChild(stepDiv);
     });
 }
@@ -770,4 +770,4 @@ document.addEventListener('keydown', (e) => {
 });
 
 // Initial setup
-refreshStats(); // Load initial stats 
+refreshStats(); // Load initial stats

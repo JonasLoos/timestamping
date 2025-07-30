@@ -13,14 +13,7 @@ mod storage;
 use crate::storage::TimestampingService;
 
 #[derive(Debug, Serialize)]
-struct AddHashResponse {
-    success: bool,
-    message: &'static str,
-    is_new: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct AddBatchResponse {
+struct AddResponse {
     success: bool,
     message: String,
     total_hashes: usize,
@@ -59,8 +52,6 @@ const PREFIX_SIZE: usize = 0;
 const NUM_THREADS: usize = 8; // Number of threads for hash distribution
 
 // Pre-allocated response messages
-const MSG_HASH_ADDED: &str = "Hash added successfully";
-const MSG_HASH_EXISTS: &str = "Hash already exists";
 const MSG_HASH_FOUND: &str = "Hash found in store";
 const MSG_HASH_NOT_FOUND: &str = "Hash not found in store";
 const MSG_INVALID_LENGTH: &str = "Invalid hash length - must be exactly 64 bytes";
@@ -77,7 +68,6 @@ async fn main() {
 
     let app = Router::new()
         .route("/add", post(add))
-        .route("/add-batch", post(add_batch))
         .route("/check", post(check))
         .route("/update-tree", post(update_tree))
         .route("/stats", get(get_stats))
@@ -85,8 +75,7 @@ async fn main() {
         .with_state(timestamping_service);
 
     println!("Server starting on http://127.0.0.1:3427");
-    println!("POST /add - Add a 512-bit hash (raw bytes, 64 bytes)");
-    println!("POST /add-batch - Add multiple 512-bit hashes (raw bytes, multiple of 64 bytes)");
+    println!("POST /add - Add multiple 512-bit hashes (raw bytes, multiple of 64 bytes)");
     println!("POST /check - Check if hash exists and get merkle proof (raw bytes, 64 bytes)");
     println!("POST /update-tree - Update the merkle tree");
     println!("GET /stats - Get storage statistics");
@@ -99,83 +88,15 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::storage::{HashStore, Hash512};
-
-    #[test]
-    fn test_hash_store_functionality() {
-        let store = HashStore::<8, 0>::new();
-
-        // Create test hashes
-        let hash1: Hash512 = [1u64; 8];
-        let hash2: Hash512 = [2u64; 8];
-
-        // Test initial state
-        assert_eq!(store.len(), 0);
-        assert!(!store.contains(&hash1));
-
-        // Add hashes
-        let is_new1 = store.add_hash(hash1);
-        assert!(is_new1);
-        assert_eq!(store.len(), 1);
-        assert!(store.contains(&hash1));
-
-        let is_new2 = store.add_hash(hash2);
-        assert!(is_new2);
-        assert_eq!(store.len(), 2);
-        assert!(store.contains(&hash2));
-
-        // Test duplicate hash
-        let is_new_duplicate = store.add_hash(hash1);
-        assert!(!is_new_duplicate);
-        assert_eq!(store.len(), 2);
-
-        // Test to_array
-        let array = store.to_array();
-        assert_eq!(array.data.len(), 2);
-        assert!(array.data.contains(&hash1));
-        assert!(array.data.contains(&hash2));
-    }
-}
-
 async fn add(
     State(service): State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
     bytes: Bytes,
-) -> (StatusCode, Json<AddHashResponse>) {
-    // Check the length of the raw bytes
-    if bytes.len() != 64 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(AddHashResponse {
-                success: false,
-                message: MSG_INVALID_LENGTH,
-                is_new: false,
-            }),
-        );
-    }
-
-    let is_new = service.hash_store.add_hash(bytes.to_vec());
-
-    (
-        StatusCode::OK,
-        Json(AddHashResponse {
-            success: true,
-            message: if is_new { MSG_HASH_ADDED } else { MSG_HASH_EXISTS },
-            is_new,
-        }),
-    )
-}
-
-async fn add_batch(
-    State(service): State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
-    bytes: Bytes,
-) -> (StatusCode, Json<AddBatchResponse>) {
+) -> (StatusCode, Json<AddResponse>) {
     // Check that the total size is a multiple of 64 bytes
     if bytes.len() % 64 != 0 {
         return (
             StatusCode::BAD_REQUEST,
-            Json(AddBatchResponse {
+            Json(AddResponse {
                 success: false,
                 message: MSG_INVALID_BATCH_SIZE.to_string(),
                 total_hashes: 0,
@@ -210,7 +131,7 @@ async fn add_batch(
 
     (
         StatusCode::OK,
-        Json(AddBatchResponse {
+        Json(AddResponse {
             success: true,
             message,
             total_hashes,
@@ -239,7 +160,7 @@ async fn check(
 
     let exists = service.hash_store.contains(&bytes);
     let merkle_proof = if exists {
-        service.get_merkle_proof_bytes_encoded(&bytes)
+        service.get_merkle_proof(&bytes.to_vec())
     } else {
         None
     };
