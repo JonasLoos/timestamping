@@ -79,6 +79,7 @@ struct GetStatsResponse {
 
 const INDEX_SIZE: usize = 28;
 const PREFIX_SIZE: usize = 0;
+const NUM_THREADS: usize = 8; // Number of threads for hash distribution
 
 // Pre-allocated response messages
 const MSG_HASH_ADDED: &str = "Hash added successfully";
@@ -90,7 +91,7 @@ const MSG_INVALID_BASE64: &str = "Invalid base64 format";
 
 #[tokio::main]
 async fn main() {
-    let timestamping_service = Arc::new(TimestampingService::<INDEX_SIZE, PREFIX_SIZE>::new());
+    let timestamping_service = Arc::new(TimestampingService::<INDEX_SIZE, PREFIX_SIZE>::with_threads(NUM_THREADS));
 
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
@@ -112,6 +113,7 @@ async fn main() {
     println!("POST /check - Check if hash exists and get merkle proof");
     println!("POST /update-tree - Update the merkle tree");
     println!("GET /stats - Get storage statistics");
+    println!("Using {} threads for hash distribution", NUM_THREADS);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3427")
         .await
@@ -154,7 +156,7 @@ mod tests {
 
         // Test to_array
         let array = store.to_array();
-        assert_eq!(array.len(), 2);
+        assert_eq!(array.data.len(), 2);
         assert!(array.data.contains(&hash1));
         assert!(array.data.contains(&hash2));
     }

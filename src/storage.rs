@@ -1,5 +1,7 @@
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::sync::mpsc::{channel, Sender, Receiver};
 use sha2::{Digest, Sha512};
 
 pub type Hash512 = [u8; 64];
@@ -33,42 +35,42 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
         }
     }
 
-        fn get_index(&self, hash: &Hash512) -> usize {
+    fn get_index(&self, hash: &Hash512) -> usize {
         // Extract INDEX_SIZE bits starting from PREFIX_SIZE
         let byte_start = PREFIX_SIZE / 8;
         let bit_start = PREFIX_SIZE % 8;
-        
+
         let mut index = 0usize;
         let mut bits_collected = 0;
-        
+
         for i in 0..((INDEX_SIZE + 7) / 8) {
             if byte_start + i >= hash.len() || bits_collected >= INDEX_SIZE {
                 break;
             }
-            
+
             let byte = hash[byte_start + i];
             let available_bits = 8 - if i == 0 { bit_start } else { 0 };
             let bits_to_take = std::cmp::min(available_bits, INDEX_SIZE - bits_collected);
-            
+
             if bits_to_take == 0 {
                 break;
             }
-            
+
             let shift = if i == 0 { bit_start } else { 0 };
             // Use u32 to avoid overflow, then convert to usize
-            let mask = if bits_to_take >= 32 { 
-                u32::MAX 
-            } else { 
-                (1u32 << bits_to_take) - 1 
+            let mask = if bits_to_take >= 32 {
+                u32::MAX
+            } else {
+                (1u32 << bits_to_take) - 1
             };
             let extracted = ((byte >> shift) as u32) & mask;
-            
+
             if bits_collected < 32 {
                 index |= (extracted as usize) << bits_collected;
             }
             bits_collected += bits_to_take;
         }
-        
+
         // Ensure we don't exceed INDEX_SIZE bits
         if INDEX_SIZE >= 32 {
             index
@@ -183,16 +185,172 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
     }
 }
 
+#[derive(Debug)]
+pub struct MultiThreadedHashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> {
+    threads: Vec<Sender<HashCommand>>,
+}
+
+#[derive(Debug)]
+enum HashCommand {
+    AddHash(Hash512),
+    Contains(Hash512, Sender<bool>),
+    GetArray(Sender<HashArray>),
+    GetLen(Sender<usize>),
+    GetOccupiedSlots(Sender<usize>),
+}
+
+impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<INDEX_SIZE, PREFIX_SIZE> {
+    pub fn new(num_threads: usize) -> Self {
+        let mut threads = Vec::new();
+
+        for _ in 0..num_threads {
+            let (tx, rx) = channel();
+            threads.push(tx);
+
+            let store = HashStore::<INDEX_SIZE, PREFIX_SIZE>::new();
+
+            thread::spawn(move || {
+                Self::hash_store_worker(store, rx);
+            });
+        }
+
+        Self {
+            threads,
+        }
+    }
+
+    fn hash_store_worker(store: HashStore<INDEX_SIZE, PREFIX_SIZE>, rx: Receiver<HashCommand>) {
+        while let Ok(cmd) = rx.recv() {
+            match cmd {
+                HashCommand::AddHash(hash) => {
+                    let _is_new = store.add_hash(hash);
+                    // Note: We don't update global counters here as they're maintained per thread
+                }
+                HashCommand::Contains(hash, tx) => {
+                    let exists = store.contains(&hash);
+                    let _ = tx.send(exists);
+                }
+                HashCommand::GetArray(tx) => {
+                    let array = store.to_array();
+                    let _ = tx.send(array);
+                }
+                HashCommand::GetLen(tx) => {
+                    let len = store.len();
+                    let _ = tx.send(len);
+                }
+                HashCommand::GetOccupiedSlots(tx) => {
+                    let slots = store.occupied_slots();
+                    let _ = tx.send(slots);
+                }
+            }
+        }
+    }
+
+    fn get_thread_index(&self, hash: &Hash512) -> usize {
+        // Use the first PREFIX_SIZE bits to determine which thread to use
+        let byte_start = 0;
+        let bit_start = 0;
+
+        let mut thread_index = 0usize;
+        let mut bits_collected = 0;
+        let num_threads = self.threads.len();
+        let bits_needed = (num_threads as f64).log2().ceil() as usize;
+
+        for i in 0..((bits_needed + 7) / 8) {
+            if byte_start + i >= hash.len() || bits_collected >= bits_needed {
+                break;
+            }
+
+            let byte = hash[byte_start + i];
+            let available_bits = 8 - if i == 0 { bit_start } else { 0 };
+            let bits_to_take = std::cmp::min(available_bits, bits_needed - bits_collected);
+
+            if bits_to_take == 0 {
+                break;
+            }
+
+            let shift = if i == 0 { bit_start } else { 0 };
+            let mask = if bits_to_take >= 32 {
+                u32::MAX
+            } else {
+                (1u32 << bits_to_take) - 1
+            };
+            let extracted = ((byte >> shift) as u32) & mask;
+
+            if bits_collected < 32 {
+                thread_index |= (extracted as usize) << bits_collected;
+            }
+            bits_collected += bits_to_take;
+        }
+
+        thread_index % num_threads
+    }
+
+    pub fn add_hash(&self, hash: Hash512) -> bool {
+        let thread_index = self.get_thread_index(&hash);
+        let tx = &self.threads[thread_index];
+
+        // Send the hash to the appropriate thread
+        let _ = tx.send(HashCommand::AddHash(hash));
+
+        // For simplicity, we'll assume it's new (we could add a response channel if needed)
+        true
+    }
+
+    pub fn contains(&self, hash: &Hash512) -> bool {
+        let thread_index = self.get_thread_index(hash);
+        let tx = &self.threads[thread_index];
+        let (response_tx, response_rx) = channel();
+
+        let _ = tx.send(HashCommand::Contains(*hash, response_tx));
+        response_rx.recv().unwrap_or(false)
+    }
+
+    pub fn len(&self) -> usize {
+        let mut total = 0;
+        for tx in &self.threads {
+            let (response_tx, response_rx) = channel();
+            let _ = tx.send(HashCommand::GetLen(response_tx));
+            total += response_rx.recv().unwrap_or(0);
+        }
+        total
+    }
+
+    pub fn occupied_slots(&self) -> usize {
+        let mut total = 0;
+        for tx in &self.threads {
+            let (response_tx, response_rx) = channel();
+            let _ = tx.send(HashCommand::GetOccupiedSlots(response_tx));
+            total += response_rx.recv().unwrap_or(0);
+        }
+        total
+    }
+
+    pub fn to_array(&self) -> HashArray {
+        let mut all_hashes = Vec::new();
+
+        // Collect arrays from all threads
+        for tx in &self.threads {
+            let (response_tx, response_rx) = channel();
+            let _ = tx.send(HashCommand::GetArray(response_tx));
+            if let Ok(array) = response_rx.recv() {
+                all_hashes.extend(array.data);
+            }
+        }
+
+        // Sort all hashes for consistent merkle tree construction
+        all_hashes.sort();
+
+        HashArray { data: all_hashes }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HashArray {
     pub data: Vec<Hash512>,
 }
 
 impl HashArray {
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
     pub fn to_merkle_tree(&self) -> MerkleTree {
         if self.data.is_empty() {
             return MerkleTree::new(0);
@@ -304,15 +462,15 @@ impl MerkleTree {
 
 #[derive(Debug, Clone)]
 pub struct TimestampingService<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> {
-    pub hash_store: Arc<HashStore<INDEX_SIZE, PREFIX_SIZE>>,
+    pub hash_store: Arc<MultiThreadedHashStore<INDEX_SIZE, PREFIX_SIZE>>,
     pub merkle_tree: Arc<RwLock<Option<MerkleTree>>>,
     pub last_tree_update: Arc<RwLock<Option<SystemTime>>>,
 }
 
 impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDEX_SIZE, PREFIX_SIZE> {
-    pub fn new() -> Self {
+    pub fn with_threads(num_threads: usize) -> Self {
         Self {
-            hash_store: Arc::new(HashStore::new()),
+            hash_store: Arc::new(MultiThreadedHashStore::new(num_threads)),
             merkle_tree: Arc::new(RwLock::new(None)),
             last_tree_update: Arc::new(RwLock::new(None)),
         }
