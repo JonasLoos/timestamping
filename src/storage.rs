@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::thread;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use sha2::{Digest, Sha512};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 pub type Hash512 = [u8; 64];
 
@@ -192,8 +193,8 @@ pub struct MultiThreadedHashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: us
 
 #[derive(Debug)]
 enum HashCommand {
-    AddHash(Hash512),
-    Contains(Hash512, Sender<bool>),
+    AddHash(String), // base64 encoded hash string
+    Contains(String, Sender<bool>), // base64 encoded hash string
     GetArray(Sender<HashArray>),
     GetLen(Sender<usize>),
     GetOccupiedSlots(Sender<usize>),
@@ -222,12 +223,25 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
     fn hash_store_worker(store: HashStore<INDEX_SIZE, PREFIX_SIZE>, rx: Receiver<HashCommand>) {
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                HashCommand::AddHash(hash) => {
-                    let _is_new = store.add_hash(hash);
-                    // Note: We don't update global counters here as they're maintained per thread
+                HashCommand::AddHash(hash_str) => {
+                    // Decode base64 hash in the worker thread
+                    if let Ok(bytes) = BASE64.decode(&hash_str) {
+                        if let Ok(hash_array) = bytes.try_into() {
+                            let _is_new = store.add_hash(hash_array);
+                        }
+                    }
                 }
-                HashCommand::Contains(hash, tx) => {
-                    let exists = store.contains(&hash);
+                HashCommand::Contains(hash_str, tx) => {
+                    // Decode base64 hash in the worker thread
+                    let exists = if let Ok(bytes) = BASE64.decode(&hash_str) {
+                        if let Ok(hash_array) = bytes.try_into() {
+                            store.contains(&hash_array)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
                     let _ = tx.send(exists);
                 }
                 HashCommand::GetArray(tx) => {
@@ -246,7 +260,18 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
         }
     }
 
-    fn get_thread_index(&self, hash: &Hash512) -> usize {
+    fn get_thread_index(&self, hash_str: &str) -> usize {
+        // Decode base64 to get the hash for thread distribution
+        let hash: Hash512 = if let Ok(bytes) = BASE64.decode(hash_str) {
+            if let Ok(hash_array) = bytes.try_into() {
+                hash_array
+            } else {
+                return 0; // fallback to first thread
+            }
+        } else {
+            return 0; // fallback to first thread
+        };
+
         // Use the first PREFIX_SIZE bits to determine which thread to use
         let byte_start = 0;
         let bit_start = 0;
@@ -286,23 +311,23 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
         thread_index % num_threads
     }
 
-    pub fn add_hash(&self, hash: Hash512) -> bool {
-        let thread_index = self.get_thread_index(&hash);
+    pub fn add_hash(&self, hash_str: String) -> bool {
+        let thread_index = self.get_thread_index(&hash_str);
         let tx = &self.threads[thread_index];
 
-        // Send the hash to the appropriate thread
-        let _ = tx.send(HashCommand::AddHash(hash));
+        // Send the base64 string to the appropriate thread
+        let _ = tx.send(HashCommand::AddHash(hash_str));
 
         // For simplicity, we'll assume it's new (we could add a response channel if needed)
         true
     }
 
-    pub fn contains(&self, hash: &Hash512) -> bool {
-        let thread_index = self.get_thread_index(hash);
+    pub fn contains(&self, hash_str: &str) -> bool {
+        let thread_index = self.get_thread_index(hash_str);
         let tx = &self.threads[thread_index];
         let (response_tx, response_rx) = channel();
 
-        let _ = tx.send(HashCommand::Contains(*hash, response_tx));
+        let _ = tx.send(HashCommand::Contains(hash_str.to_string(), response_tx));
         response_rx.recv().unwrap_or(false)
     }
 
@@ -487,6 +512,33 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
     pub fn get_merkle_proof(&self, hash: &Hash512) -> Option<Vec<(Hash512, Hash512)>> {
         let tree = self.merkle_tree.read().unwrap();
         tree.as_ref()?.get(hash)
+    }
+
+    pub fn get_merkle_proof_from_base64(&self, hash_str: &str) -> Option<Vec<(Hash512, Hash512)>> {
+        // Decode base64 hash in the service
+        if let Ok(bytes) = BASE64.decode(hash_str) {
+            if let Ok(hash_array) = bytes.try_into() {
+                let tree = self.merkle_tree.read().unwrap();
+                tree.as_ref()?.get(&hash_array)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn get_merkle_proof_base64_encoded(&self, hash_str: &str) -> Option<Vec<(String, String)>> {
+        // Get the raw proof and encode it as base64 strings
+        self.get_merkle_proof_from_base64(hash_str).map(|proof| {
+            proof.into_iter()
+                .map(|(left, right)| (BASE64.encode(left), BASE64.encode(right)))
+                .collect()
+        })
+    }
+
+    pub fn get_merkle_tree_root_base64(&self) -> Option<String> {
+        self.get_merkle_tree_root().map(|root| BASE64.encode(root))
     }
 
     pub fn get_last_update_timestamp(&self) -> Option<u64> {
