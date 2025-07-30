@@ -3,20 +3,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::thread;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use sha2::{Digest, Sha512};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 pub type Hash512 = [u64; 8];
 
 #[derive(Debug)]
 pub enum Hash512Error {
-    Base64DecodeError(base64::DecodeError),
     InvalidLengthError,
 }
 
 impl std::fmt::Display for Hash512Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Hash512Error::Base64DecodeError(e) => write!(f, "Base64 decode error: {}", e),
             Hash512Error::InvalidLengthError => write!(f, "Invalid hash length"),
         }
     }
@@ -24,22 +21,15 @@ impl std::fmt::Display for Hash512Error {
 
 impl std::error::Error for Hash512Error {}
 
-impl From<base64::DecodeError> for Hash512Error {
-    fn from(err: base64::DecodeError) -> Self {
-        Hash512Error::Base64DecodeError(err)
-    }
-}
-
 // Trait for Hash512 operations
 pub trait Hash512Ops {
-    fn from_base64(s: &str) -> Result<Self, Hash512Error> where Self: Sized;
-    fn to_base64(&self) -> String;
+    fn from_bytes(bytes: &[u8]) -> Result<Self, Hash512Error> where Self: Sized;
+    fn to_bytes(&self) -> Vec<u8>;
     fn to_index(&self, prefix_size: usize, index_size: usize) -> usize;
 }
 
 impl Hash512Ops for Hash512 {
-    fn from_base64(s: &str) -> Result<Self, Hash512Error> {
-        let bytes = BASE64.decode(s)?;
+    fn from_bytes(bytes: &[u8]) -> Result<Self, Hash512Error> {
         if bytes.len() != 64 {
             return Err(Hash512Error::InvalidLengthError);
         }
@@ -59,13 +49,13 @@ impl Hash512Ops for Hash512 {
         Ok(hash_array)
     }
 
-    fn to_base64(&self) -> String {
-        // Convert [u64; 8] to Vec<u8> for base64 encoding
+    fn to_bytes(&self) -> Vec<u8> {
+        // Convert [u64; 8] to Vec<u8>
         let mut bytes = Vec::with_capacity(64);
         for &u64_val in self {
             bytes.extend_from_slice(&u64_val.to_le_bytes());
         }
-        BASE64.encode(bytes)
+        bytes
     }
 
     fn to_index(&self, prefix_size: usize, index_size: usize) -> usize {
@@ -226,8 +216,8 @@ pub struct MultiThreadedHashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: us
 
 #[derive(Debug)]
 enum HashCommand {
-    AddHash(String), // base64 encoded hash string
-    Contains(String, Sender<bool>), // base64 encoded hash string
+    AddHash(Vec<u8>), // raw bytes
+    Contains(Vec<u8>, Sender<bool>), // raw bytes
     GetArray(Sender<HashArray>),
     GetLen(Sender<usize>),
     GetOccupiedSlots(Sender<usize>),
@@ -256,15 +246,15 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
     fn hash_store_worker(store: HashStore<INDEX_SIZE, PREFIX_SIZE>, rx: Receiver<HashCommand>) {
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                HashCommand::AddHash(hash_str) => {
-                    // Decode base64 hash in the worker thread
-                    if let Ok(hash_array) = Hash512::from_base64(&hash_str) {
+                HashCommand::AddHash(hash_bytes) => {
+                    // Convert raw bytes to hash array in the worker thread
+                    if let Ok(hash_array) = Hash512::from_bytes(&hash_bytes) {
                         let _is_new = store.add_hash(hash_array);
                     }
                 }
-                HashCommand::Contains(hash_str, tx) => {
-                    // Decode base64 hash in the worker thread
-                    let exists = if let Ok(hash_array) = Hash512::from_base64(&hash_str) {
+                HashCommand::Contains(hash_bytes, tx) => {
+                    // Convert raw bytes to hash array in the worker thread
+                    let exists = if let Ok(hash_array) = Hash512::from_bytes(&hash_bytes) {
                         store.contains(&hash_array)
                     } else {
                         false
@@ -287,9 +277,9 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
         }
     }
 
-    fn get_thread_index(&self, hash_str: &str) -> usize {
-        // Decode base64 to get the hash for thread distribution
-        let hash: Hash512 = if let Ok(hash_array) = Hash512::from_base64(hash_str) {
+    fn get_thread_index(&self, hash_bytes: &[u8]) -> usize {
+        // Convert raw bytes to get the hash for thread distribution
+        let hash: Hash512 = if let Ok(hash_array) = Hash512::from_bytes(hash_bytes) {
             hash_array
         } else {
             return 0; // fallback to first thread
@@ -301,23 +291,23 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
         hash.to_index(0, bits_needed) % num_threads
     }
 
-    pub fn add_hash(&self, hash_str: String) -> bool {
-        let thread_index = self.get_thread_index(&hash_str);
+    pub fn add_hash(&self, hash_bytes: Vec<u8>) -> bool {
+        let thread_index = self.get_thread_index(&hash_bytes);
         let tx = &self.threads[thread_index];
 
-        // Send the base64 string to the appropriate thread
-        let _ = tx.send(HashCommand::AddHash(hash_str));
+        // Send the raw bytes to the appropriate thread
+        let _ = tx.send(HashCommand::AddHash(hash_bytes));
 
         // For simplicity, we'll assume it's new (we could add a response channel if needed)
         true
     }
 
-    pub fn contains(&self, hash_str: &str) -> bool {
-        let thread_index = self.get_thread_index(hash_str);
+    pub fn contains(&self, hash_bytes: &[u8]) -> bool {
+        let thread_index = self.get_thread_index(hash_bytes);
         let tx = &self.threads[thread_index];
         let (response_tx, response_rx) = channel();
 
-        let _ = tx.send(HashCommand::Contains(hash_str.to_string(), response_tx));
+        let _ = tx.send(HashCommand::Contains(hash_bytes.to_vec(), response_tx));
         response_rx.recv().unwrap_or(false)
     }
 
@@ -522,9 +512,9 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
         tree.as_ref()?.get(hash)
     }
 
-    pub fn get_merkle_proof_from_base64(&self, hash_str: &str) -> Option<Vec<(Hash512, Hash512)>> {
-        // Decode base64 hash in the service
-        if let Ok(hash_array) = Hash512::from_base64(hash_str) {
+    pub fn get_merkle_proof_from_bytes(&self, hash_bytes: &[u8]) -> Option<Vec<(Hash512, Hash512)>> {
+        // Convert raw bytes to hash array in the service
+        if let Ok(hash_array) = Hash512::from_bytes(hash_bytes) {
             let tree = self.merkle_tree.read().unwrap();
             tree.as_ref()?.get(&hash_array)
         } else {
@@ -532,17 +522,17 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
         }
     }
 
-    pub fn get_merkle_proof_base64_encoded(&self, hash_str: &str) -> Option<Vec<(String, String)>> {
-        // Get the raw proof and encode it as base64 strings
-        self.get_merkle_proof_from_base64(hash_str).map(|proof| {
+    pub fn get_merkle_proof_bytes_encoded(&self, hash_bytes: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+        // Get the raw proof and return as raw bytes
+        self.get_merkle_proof_from_bytes(hash_bytes).map(|proof| {
             proof.into_iter()
-                .map(|(left, right)| (left.to_base64(), right.to_base64()))
+                .map(|(left, right)| (left.to_bytes(), right.to_bytes()))
                 .collect()
         })
     }
 
-    pub fn get_merkle_tree_root_base64(&self) -> Option<String> {
-        self.get_merkle_tree_root().map(|root| root.to_base64())
+    pub fn get_merkle_tree_root_bytes(&self) -> Option<Vec<u8>> {
+        self.get_merkle_tree_root().map(|root| root.to_bytes())
     }
 
     pub fn get_last_update_timestamp(&self) -> Option<u64> {

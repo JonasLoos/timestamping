@@ -1,31 +1,22 @@
 use axum::{
-    extract::Json,
+    body::Bytes,
+    extract::{Json, State},
     http::{Method, StatusCode, header},
     routing::{get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 
 mod storage;
 use crate::storage::TimestampingService;
-
-#[derive(Debug, Deserialize, Serialize)]
-struct AddHashRequest {
-    hash: String, // base64 encoded bytes
-}
 
 #[derive(Debug, Serialize)]
 struct AddHashResponse {
     success: bool,
     message: &'static str,
     is_new: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct AddBatchRequest {
-    hashes: Vec<String>, // base64 encoded bytes
 }
 
 #[derive(Debug, Serialize)]
@@ -35,19 +26,6 @@ struct AddBatchResponse {
     total_hashes: usize,
     new_hashes: usize,
     existing_hashes: usize,
-    results: Vec<BatchHashResult>,
-}
-
-#[derive(Debug, Serialize)]
-struct BatchHashResult {
-    hash: String, // base64 encoded bytes
-    is_new: bool,
-    error: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CheckHashRequest {
-    hash: String, // base64 encoded bytes
 }
 
 #[derive(Debug, Serialize)]
@@ -55,7 +33,7 @@ struct CheckHashResponse {
     success: bool,
     message: &'static str,
     exists: bool,
-    merkle_proof: Option<Vec<(String, String)>>, // base64 encoded bytes
+    merkle_proof: Option<Vec<(Vec<u8>, Vec<u8>)>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,7 +50,7 @@ struct GetStatsResponse {
     slots: usize,
     total_slots: usize,
     merkle_tree_size: usize,
-    merkle_tree_root: Option<String>, // base64 encoded bytes
+    merkle_tree_root: Option<Vec<u8>>,
     last_tree_update: Option<u64>,
 }
 
@@ -85,7 +63,8 @@ const MSG_HASH_ADDED: &str = "Hash added successfully";
 const MSG_HASH_EXISTS: &str = "Hash already exists";
 const MSG_HASH_FOUND: &str = "Hash found in store";
 const MSG_HASH_NOT_FOUND: &str = "Hash not found in store";
-const MSG_INVALID_LENGTH: &str = "Invalid hash length - must be 88 base64 characters";
+const MSG_INVALID_LENGTH: &str = "Invalid hash length - must be exactly 64 bytes";
+const MSG_INVALID_BATCH_SIZE: &str = "Invalid batch size - must be multiple of 64 bytes";
 
 #[tokio::main]
 async fn main() {
@@ -106,9 +85,9 @@ async fn main() {
         .with_state(timestamping_service);
 
     println!("Server starting on http://127.0.0.1:3427");
-    println!("POST /add - Add a 512-bit hash");
-    println!("POST /add-batch - Add multiple 512-bit hashes");
-    println!("POST /check - Check if hash exists and get merkle proof");
+    println!("POST /add - Add a 512-bit hash (raw bytes, 64 bytes)");
+    println!("POST /add-batch - Add multiple 512-bit hashes (raw bytes, multiple of 64 bytes)");
+    println!("POST /check - Check if hash exists and get merkle proof (raw bytes, 64 bytes)");
     println!("POST /update-tree - Update the merkle tree");
     println!("GET /stats - Get storage statistics");
     println!("Using {} threads for hash distribution", NUM_THREADS);
@@ -161,12 +140,11 @@ mod tests {
 }
 
 async fn add(
-    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
-    Json(payload): Json<AddHashRequest>,
+    State(service): State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
+    bytes: Bytes,
 ) -> (StatusCode, Json<AddHashResponse>) {
-    // Only check the length of the base64 string
-    // The actual decoding will happen in the worker thread
-    if payload.hash.len() != 88 { // 64 bytes = 88 base64 characters (with padding)
+    // Check the length of the raw bytes
+    if bytes.len() != 64 {
         return (
             StatusCode::BAD_REQUEST,
             Json(AddHashResponse {
@@ -177,7 +155,7 @@ async fn add(
         );
     }
 
-    let is_new = service.hash_store.add_hash(payload.hash);
+    let is_new = service.hash_store.add_hash(bytes.to_vec());
 
     (
         StatusCode::OK,
@@ -190,40 +168,41 @@ async fn add(
 }
 
 async fn add_batch(
-    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
-    Json(payload): Json<AddBatchRequest>,
+    State(service): State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
+    bytes: Bytes,
 ) -> (StatusCode, Json<AddBatchResponse>) {
-    let mut results = Vec::new();
+    // Check that the total size is a multiple of 64 bytes
+    if bytes.len() % 64 != 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AddBatchResponse {
+                success: false,
+                message: MSG_INVALID_BATCH_SIZE.to_string(),
+                total_hashes: 0,
+                new_hashes: 0,
+                existing_hashes: 0,
+            }),
+        );
+    }
+
+    let total_hashes = bytes.len() / 64;
     let mut new_hashes = 0;
     let mut existing_hashes = 0;
 
-    for hash_str in payload.hashes {
-        // Only check the length of the base64 string
-        // The actual decoding will happen in the worker thread
-        if hash_str.len() != 88 { // 64 bytes = 88 base64 characters (with padding)
-            results.push(BatchHashResult {
-                hash: hash_str,
-                is_new: false,
-                error: Some(MSG_INVALID_LENGTH.to_string()),
-            });
-            continue;
-        }
+    // Process hashes in chunks of 64 bytes
+    for i in 0..total_hashes {
+        let start = i * 64;
+        let end = start + 64;
+        let hash_bytes = bytes[start..end].to_vec();
 
-        let is_new = service.hash_store.add_hash(hash_str.clone());
+        let is_new = service.hash_store.add_hash(hash_bytes);
         if is_new {
             new_hashes += 1;
         } else {
             existing_hashes += 1;
         }
-
-        results.push(BatchHashResult {
-            hash: hash_str,
-            is_new,
-            error: None,
-        });
     }
 
-    let total_hashes = results.len();
     let message = format!(
         "Batch processed: {} total, {} new, {} existing",
         total_hashes, new_hashes, existing_hashes
@@ -237,18 +216,16 @@ async fn add_batch(
             total_hashes,
             new_hashes,
             existing_hashes,
-            results,
         }),
     )
 }
 
 async fn check(
-    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
-    Json(payload): Json<CheckHashRequest>,
+    State(service): State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
+    bytes: Bytes,
 ) -> (StatusCode, Json<CheckHashResponse>) {
-    // Only check the length of the base64 string
-    // The actual decoding will happen in the worker thread
-    if payload.hash.len() != 88 { // 64 bytes = 88 base64 characters (with padding)
+    // Check the length of the raw bytes
+    if bytes.len() != 64 {
         return (
             StatusCode::BAD_REQUEST,
             Json(CheckHashResponse {
@@ -260,9 +237,9 @@ async fn check(
         );
     }
 
-    let exists = service.hash_store.contains(&payload.hash);
+    let exists = service.hash_store.contains(&bytes);
     let merkle_proof = if exists {
-        service.get_merkle_proof_base64_encoded(&payload.hash)
+        service.get_merkle_proof_bytes_encoded(&bytes)
     } else {
         None
     };
@@ -279,7 +256,7 @@ async fn check(
 }
 
 async fn update_tree(
-    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
+    State(service): State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
 ) -> (StatusCode, Json<UpdateTreeResponse>) {
     let hash_count = service.hash_store.len();
     service.update_merkle_tree();
@@ -297,14 +274,14 @@ async fn update_tree(
 }
 
 async fn get_stats(
-    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
+    State(service): State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
 ) -> (StatusCode, Json<GetStatsResponse>) {
     let stats = GetStatsResponse {
         count: service.hash_store.len(),
         slots: service.hash_store.occupied_slots(),
         total_slots: 1 << INDEX_SIZE,
         merkle_tree_size: service.get_merkle_tree_size(),
-        merkle_tree_root: service.get_merkle_tree_root_base64(),
+        merkle_tree_root: service.get_merkle_tree_root_bytes(),
         last_tree_update: service.get_last_update_timestamp(),
     };
     (StatusCode::OK, Json(stats))

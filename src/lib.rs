@@ -5,16 +5,16 @@ mod tests {
     use crate::storage::{Hash512, Hash512Ops};
 
     #[test]
-    fn test_hash512_base64_conversion() {
+    fn test_hash512_bytes_conversion() {
         // Create a test hash
         let original_hash: Hash512 = [1u64; 8];
 
-        // Test to_base64
-        let base64_str = original_hash.to_base64();
-        assert!(!base64_str.is_empty());
+        // Test to_bytes
+        let bytes = original_hash.to_bytes();
+        assert_eq!(bytes.len(), 64);
 
-        // Test from_base64
-        let decoded_hash = Hash512::from_base64(&base64_str).unwrap();
+        // Test from_bytes
+        let decoded_hash = Hash512::from_bytes(&bytes).unwrap();
         assert_eq!(original_hash, decoded_hash);
     }
 
@@ -29,8 +29,6 @@ mod tests {
         let index2 = hash.to_index(0, 4);
         let index3 = hash.to_index(8, 4); // Extract from bit position 8-11
 
-
-
         // These should be different since we're extracting different bits
         assert_ne!(index1, index2);
         assert_ne!(index2, index3);
@@ -43,12 +41,18 @@ mod tests {
 
     #[test]
     fn test_hash512_error_handling() {
-        // Test invalid base64 string
-        let result = Hash512::from_base64("invalid_base64_string");
+        // Test invalid bytes length
+        let invalid_bytes = vec![1, 2, 3]; // Too short
+        let result = Hash512::from_bytes(&invalid_bytes);
         assert!(result.is_err());
 
-        // Test empty string
-        let result = Hash512::from_base64("");
+        // Test empty bytes
+        let result = Hash512::from_bytes(&[]);
         assert!(result.is_err());
+
+        // Test correct length
+        let valid_bytes = vec![0u8; 64];
+        let result = Hash512::from_bytes(&valid_bytes);
+        assert!(result.is_ok());
     }
 }

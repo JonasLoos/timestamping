@@ -34,7 +34,7 @@ const proofSteps = document.getElementById('proofSteps');
 
 // Current files data
 let currentFiles = [];
-let fileHashes = new Map(); // Map of file name to hash
+let fileHashes = new Map(); // Map of file name to hash bytes
 let fileStatuses = new Map(); // Map of file name to status info
 let fileProofs = new Map(); // Map of file name to merkle proof
 let activeTab = null;
@@ -101,9 +101,9 @@ async function handleFilesSelect() {
     for (const file of files) {
         updateFileStatus(file.name, 'upload', 'processing', 'Calculating hash...', '');
         try {
-            const hash = await calculateFileHash(file);
-            fileHashes.set(file.name, hash);
-            updateFileHashDisplay(file.name, hash);
+            const hashBytes = await calculateFileHash(file);
+            fileHashes.set(file.name, hashBytes);
+            updateFileHashDisplay(file.name, hashBytes);
             updateFileStatus(file.name, 'upload', 'pending', 'Hash calculated', '');
             updateFileStatus(file.name, 'check', 'pending', 'Ready to check', '');
         } catch (error) {
@@ -237,11 +237,13 @@ function updateFileStatus(fileName, type, status, message, timestamp, merkleProo
     }
 }
 
-function updateFileHashDisplay(fileName, hash) {
+function updateFileHashDisplay(fileName, hashBytes) {
     const hashElement = document.getElementById(`hash-${fileName}`);
     if (hashElement) {
         const hashValue = hashElement.querySelector('.hash-value');
-        hashValue.textContent = hash;
+        // Convert to hex for display (more compact than base64)
+        const hashHex = Array.from(hashBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        hashValue.textContent = hashHex;
         hashValue.className = 'hash-value hash-display';
     }
 }
@@ -272,9 +274,8 @@ async function calculateFileHash(file) {
                 const arrayBuffer = e.target.result;
                 const hashBuffer = await crypto.subtle.digest('SHA-512', arrayBuffer);
                 const hashArray = Array.from(new Uint8Array(hashBuffer));
-                // Convert to base64 instead of hex
-                const hashBase64 = btoa(String.fromCharCode(...hashArray));
-                resolve(hashBase64);
+                // Return raw bytes
+                resolve(hashArray);
             } catch (error) {
                 reject(error);
             }
@@ -282,6 +283,34 @@ async function calculateFileHash(file) {
         reader.onerror = () => reject(new Error('Failed to read file'));
         reader.readAsArrayBuffer(file);
     });
+}
+
+// Helper function to convert raw bytes to hex for display
+function bytesToHex(bytes) {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Helper function to convert hex to raw bytes
+function hexToBytes(hex) {
+    const bytes = [];
+    for (let i = 0; i < hex.length; i += 2) {
+        bytes.push(parseInt(hex.substr(i, 2), 16));
+    }
+    return bytes;
+}
+
+// Helper function to validate raw bytes
+function validateRawBytes(bytes) {
+    return bytes.length === 64;
+}
+
+// Helper function to compare byte arrays
+function arraysEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false;
+    }
+    return true;
 }
 
 function enableButtons() {
@@ -303,36 +332,35 @@ async function addAllHashesToStore() {
         addAllHashesBtn.disabled = true;
 
         // Use batch endpoint for better performance
-        const hashes = Array.from(fileHashes.values());
+        const hashes = Array.from(fileHashes.values()); // These are now raw bytes
         
         // Update all files to processing status
         for (const fileName of fileHashes.keys()) {
             updateFileStatus(fileName, 'upload', 'processing', 'Adding to store...', '');
         }
         
+        // Concatenate all hashes into a single Uint8Array
+        const totalBytes = hashes.length * 64;
+        const batchBytes = new Uint8Array(totalBytes);
+        hashes.forEach((hashBytes, index) => {
+            batchBytes.set(hashBytes, index * 64);
+        });
+        
         const response = await fetch(`${API_BASE_URL}/add-batch`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
+                'Content-Type': 'application/octet-stream',
             },
-            body: JSON.stringify({ hashes: hashes }),
+            body: batchBytes,
         });
 
         const result = await response.json();
 
         if (response.ok && result.success) {
-            // Update individual file statuses based on batch results
-            const fileNameArray = Array.from(fileHashes.keys());
-            result.results.forEach((hashResult, index) => {
-                const fileName = fileNameArray[index];
-                if (hashResult.error) {
-                    updateFileStatus(fileName, 'upload', 'error', `Failed: ${hashResult.error}`, '');
-                } else if (hashResult.is_new) {
-                    updateFileStatus(fileName, 'upload', 'success', 'Successfully added to store', '');
-                } else {
-                    updateFileStatus(fileName, 'upload', 'warning', 'Already exists in store', '');
-                }
-            });
+            // Update all files with success status
+            for (const fileName of fileHashes.keys()) {
+                updateFileStatus(fileName, 'upload', 'success', 'Successfully added to store', '');
+            }
             
             // Show batch summary
             console.log(`Batch processed: ${result.total_hashes} total, ${result.new_hashes} new, ${result.existing_hashes} existing`);
@@ -363,16 +391,19 @@ async function checkAllHashes() {
     try {
         checkAllHashesBtn.disabled = true;
 
-        for (const [fileName, hash] of fileHashes) {
+        for (const [fileName, hashBytes] of fileHashes) {
             updateFileStatus(fileName, 'check', 'processing', 'Checking in store...', '');
             
             try {
+                // Convert JavaScript array to Uint8Array for raw bytes
+                const hashUint8Array = new Uint8Array(hashBytes);
+                
                 const response = await fetch(`${API_BASE_URL}/check`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/octet-stream',
                     },
-                    body: JSON.stringify({ hash: hash }),
+                    body: hashUint8Array,
                 });
 
                 const result = await response.json();
@@ -447,9 +478,11 @@ async function refreshStats() {
             merkleTreeSize.textContent = stats.merkle_tree_size.toLocaleString();
             
             if (stats.merkle_tree_root) {
-                currentMerkleRoot = stats.merkle_tree_root;
-                merkleRoot.textContent = `${stats.merkle_tree_root.substring(0, 16)}...${stats.merkle_tree_root.substring(stats.merkle_tree_root.length - 16)}`;
-                merkleRoot.title = stats.merkle_tree_root; // Full hash on hover
+                // Convert raw bytes to hex for display
+                const rootHex = Array.from(stats.merkle_tree_root).map(b => b.toString(16).padStart(2, '0')).join('');
+                currentMerkleRoot = rootHex;
+                merkleRoot.textContent = `${rootHex.substring(0, 16)}...${rootHex.substring(rootHex.length - 16)}`;
+                merkleRoot.title = rootHex; // Full hash on hover
             } else {
                 currentMerkleRoot = '';
                 merkleRoot.textContent = 'Not generated';
@@ -471,42 +504,45 @@ async function refreshStats() {
 }
 
 async function checkManualHash() {
-    const hash = manualHashInput.value.trim();
+    const hashInput = manualHashInput.value.trim();
     
-    if (!hash) {
+    if (!hashInput) {
         showManualResult('error', 'No hash provided', 'Please enter a hash to check');
         return;
     }
 
-    // Validate base64 format
+    let hashBytes;
+    
+    // Try to parse as hex first (for backward compatibility)
     try {
-        atob(hash);
+        const decodedBytes = hexToBytes(hashInput);
+        if (decodedBytes.length !== 64) {
+            showManualResult('error', 'Invalid hash length', 'Hash must be exactly 64 bytes (512 bits)');
+            return;
+        }
+        hashBytes = Array.from(decodedBytes);
     } catch (error) {
-        showManualResult('error', 'Invalid hash format', 'Hash must be in base64 format');
+        showManualResult('error', 'Invalid hash format', 'Hash must be in hex format (e.g., 6e9180f1...)');
         return;
     }
 
-    // Validate length (64 bytes = 512 bits)
-    const decodedBytes = new Uint8Array(atob(hash).split('').map(c => c.charCodeAt(0)));
-    if (decodedBytes.length !== 64) {
-        showManualResult('error', 'Invalid hash length', 'Hash must be exactly 64 bytes (512 bits)');
-        return;
-    }
-
-    await checkHash(hash);
+    await checkHash(hashBytes);
 }
 
-async function checkHash(hash) {
+async function checkHash(hashBytes) {
     try {
         checkManualHashBtn.disabled = true;
         showManualResult('info', 'Checking hash...', 'Please wait...');
 
+        // Convert JavaScript array to Uint8Array for raw bytes
+        const hashUint8Array = new Uint8Array(hashBytes);
+
         const response = await fetch(`${API_BASE_URL}/check`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
+                'Content-Type': 'application/octet-stream',
             },
-            body: JSON.stringify({ hash: hash }),
+            body: hashUint8Array,
         });
 
         const result = await response.json();
@@ -575,7 +611,7 @@ function showProofModal(fileName) {
     
     // Set basic info
     proofFileName.textContent = fileName;
-    proofFileHash.textContent = hash;
+    proofFileHash.textContent = bytesToHex(hash); // Display hex for proof modal
     proofExpectedRoot.textContent = currentMerkleRoot || 'Not available';
     
     // Show modal
@@ -589,14 +625,14 @@ function hideProofModal() {
     proofModal.style.display = 'none';
 }
 
-async function verifyMerkleProof(leafHash, proof, expectedRoot) {
+async function verifyMerkleProof(leafHashBytes, proof, expectedRoot) {
     verificationStatus.textContent = 'Verifying proof...';
     verificationResult.className = 'verification-result';
     verificationDetails.textContent = '';
     proofSteps.innerHTML = '';
     
     try {
-        let currentHash = leafHash;
+        let currentHashBytes = leafHashBytes;
         const steps = [];
         
         // Add initial step
@@ -606,53 +642,49 @@ async function verifyMerkleProof(leafHash, proof, expectedRoot) {
             leftHash: '',
             rightHash: '',
             operator: '',
-            result: currentHash,
+            result: bytesToHex(currentHashBytes),
             isCurrent: true
         });
         
         // Process each proof level
         for (let i = 0; i < proof.length; i++) {
-            const [leftSibling, rightSibling] = proof[i];
-            let leftHash, rightHash, operation;
+            const [leftSiblingBytes, rightSiblingBytes] = proof[i]; // These are now raw bytes
+            let leftHashBytes, rightHashBytes, operation;
             
             // Determine if current hash is left or right child
-            if (leftSibling === currentHash) {
+            if (arraysEqual(leftSiblingBytes, currentHashBytes)) {
                 // Current hash is the left child
-                leftHash = currentHash;
-                rightHash = rightSibling;
+                leftHashBytes = currentHashBytes;
+                rightHashBytes = rightSiblingBytes;
                 operation = 'Concatenate as left child with right sibling';
             } else {
                 // Current hash is the right child
-                leftHash = leftSibling;
-                rightHash = currentHash;
+                leftHashBytes = leftSiblingBytes;
+                rightHashBytes = currentHashBytes;
                 operation = 'Concatenate as right child with left sibling';
             }
             
-            // Convert base64 strings to byte arrays
-            const leftBytes = new Uint8Array(atob(leftHash).split('').map(c => c.charCodeAt(0)));
-            const rightBytes = new Uint8Array(atob(rightHash).split('').map(c => c.charCodeAt(0)));
-            
             // Concatenate byte arrays (same as backend hasher.update() calls)
-            const combined = new Uint8Array(leftBytes.length + rightBytes.length);
-            combined.set(leftBytes);
-            combined.set(rightBytes, leftBytes.length);
+            const combined = new Uint8Array(leftHashBytes.length + rightHashBytes.length);
+            combined.set(leftHashBytes);
+            combined.set(rightHashBytes, leftHashBytes.length);
             
             // Hash the concatenated bytes
             const hashBuffer = await crypto.subtle.digest('SHA-512', combined);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
-            const newHash = btoa(String.fromCharCode(...hashArray));
+            const newHashBytes = hashArray;
             
             steps.push({
                 stepNumber: i + 1,
                 operation: operation,
-                leftHash: leftHash,
-                rightHash: rightHash,
+                leftHash: bytesToHex(leftHashBytes),
+                rightHash: bytesToHex(rightHashBytes),
                 operator: '+',
-                result: newHash,
+                result: bytesToHex(newHashBytes),
                 isCurrent: false
             });
             
-            currentHash = newHash;
+            currentHashBytes = newHashBytes;
         }
         
         // Mark last step as current
@@ -665,7 +697,8 @@ async function verifyMerkleProof(leafHash, proof, expectedRoot) {
         displayProofSteps(steps);
         
         // Check if computed root matches expected root
-        const isValid = currentHash === expectedRoot;
+        const computedRootHex = bytesToHex(currentHashBytes);
+        const isValid = computedRootHex === expectedRoot;
         
         if (isValid) {
             verificationResult.className = 'verification-result success';
@@ -674,7 +707,7 @@ async function verifyMerkleProof(leafHash, proof, expectedRoot) {
         } else {
             verificationResult.className = 'verification-result error';
             verificationStatus.textContent = '✗ Proof Verification Failed';
-            verificationDetails.textContent = `The computed root hash (${currentHash.substring(0, 16)}...${currentHash.substring(currentHash.length - 16)}) does not match the expected root. This could indicate the proof is invalid or the merkle tree has been updated.`;
+            verificationDetails.textContent = `The computed root hash (${computedRootHex.substring(0, 16)}...${computedRootHex.substring(computedRootHex.length - 16)}) does not match the expected root. This could indicate the proof is invalid or the merkle tree has been updated.`;
         }
         
     } catch (error) {
