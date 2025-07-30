@@ -7,6 +7,92 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 pub type Hash512 = [u8; 64];
 
+#[derive(Debug)]
+pub enum Hash512Error {
+    Base64DecodeError(base64::DecodeError),
+    InvalidLengthError,
+}
+
+impl std::fmt::Display for Hash512Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Hash512Error::Base64DecodeError(e) => write!(f, "Base64 decode error: {}", e),
+            Hash512Error::InvalidLengthError => write!(f, "Invalid hash length"),
+        }
+    }
+}
+
+impl std::error::Error for Hash512Error {}
+
+impl From<base64::DecodeError> for Hash512Error {
+    fn from(err: base64::DecodeError) -> Self {
+        Hash512Error::Base64DecodeError(err)
+    }
+}
+
+// Trait for Hash512 operations
+pub trait Hash512Ops {
+    fn from_base64(s: &str) -> Result<Self, Hash512Error> where Self: Sized;
+    fn to_base64(&self) -> String;
+    fn to_index(&self, prefix_size: usize, index_size: usize) -> usize;
+}
+
+impl Hash512Ops for Hash512 {
+    fn from_base64(s: &str) -> Result<Self, Hash512Error> {
+        let bytes = BASE64.decode(s)?;
+        let hash_array: Hash512 = bytes.try_into().map_err(|_| Hash512Error::InvalidLengthError)?;
+        Ok(hash_array)
+    }
+
+    fn to_base64(&self) -> String {
+        BASE64.encode(self)
+    }
+
+    fn to_index(&self, prefix_size: usize, index_size: usize) -> usize {
+        // Extract index_size bits starting from prefix_size
+        let byte_start = prefix_size / 8;
+        let bit_start = prefix_size % 8;
+
+        let mut index = 0usize;
+        let mut bits_collected = 0;
+
+        for i in 0..((index_size + 7) / 8) {
+            if byte_start + i >= self.len() || bits_collected >= index_size {
+                break;
+            }
+
+            let byte = self[byte_start + i];
+            let available_bits = 8 - if i == 0 { bit_start } else { 0 };
+            let bits_to_take = std::cmp::min(available_bits, index_size - bits_collected);
+
+            if bits_to_take == 0 {
+                break;
+            }
+
+            let shift = if i == 0 { bit_start } else { 0 };
+            // Use u32 to avoid overflow, then convert to usize
+            let mask = if bits_to_take >= 32 {
+                u32::MAX
+            } else {
+                (1u32 << bits_to_take) - 1
+            };
+            let extracted = ((byte >> shift) as u32) & mask;
+
+            if bits_collected < 32 {
+                index |= (extracted as usize) << bits_collected;
+            }
+            bits_collected += bits_to_take;
+        }
+
+        // Ensure we don't exceed index_size bits
+        if index_size >= 32 {
+            index
+        } else {
+            index & ((1usize << index_size) - 1)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HashLL {
     pub hash: Hash512,
@@ -36,52 +122,8 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
         }
     }
 
-    fn get_index(&self, hash: &Hash512) -> usize {
-        // Extract INDEX_SIZE bits starting from PREFIX_SIZE
-        let byte_start = PREFIX_SIZE / 8;
-        let bit_start = PREFIX_SIZE % 8;
-
-        let mut index = 0usize;
-        let mut bits_collected = 0;
-
-        for i in 0..((INDEX_SIZE + 7) / 8) {
-            if byte_start + i >= hash.len() || bits_collected >= INDEX_SIZE {
-                break;
-            }
-
-            let byte = hash[byte_start + i];
-            let available_bits = 8 - if i == 0 { bit_start } else { 0 };
-            let bits_to_take = std::cmp::min(available_bits, INDEX_SIZE - bits_collected);
-
-            if bits_to_take == 0 {
-                break;
-            }
-
-            let shift = if i == 0 { bit_start } else { 0 };
-            // Use u32 to avoid overflow, then convert to usize
-            let mask = if bits_to_take >= 32 {
-                u32::MAX
-            } else {
-                (1u32 << bits_to_take) - 1
-            };
-            let extracted = ((byte >> shift) as u32) & mask;
-
-            if bits_collected < 32 {
-                index |= (extracted as usize) << bits_collected;
-            }
-            bits_collected += bits_to_take;
-        }
-
-        // Ensure we don't exceed INDEX_SIZE bits
-        if INDEX_SIZE >= 32 {
-            index
-        } else {
-            index & ((1usize << INDEX_SIZE) - 1)
-        }
-    }
-
     pub fn add_hash(&self, hash: Hash512) -> bool {
-        let index = self.get_index(&hash);
+        let index = hash.to_index(PREFIX_SIZE, INDEX_SIZE);
         let mut data = self.data.write().unwrap();
 
         if data[index].is_none() {
@@ -144,7 +186,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
     }
 
     pub fn contains(&self, hash: &Hash512) -> bool {
-        let index = self.get_index(hash);
+        let index = hash.to_index(PREFIX_SIZE, INDEX_SIZE);
         let data = self.data.read().unwrap();
 
         if let Some(node) = &data[index] {
@@ -225,20 +267,14 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
             match cmd {
                 HashCommand::AddHash(hash_str) => {
                     // Decode base64 hash in the worker thread
-                    if let Ok(bytes) = BASE64.decode(&hash_str) {
-                        if let Ok(hash_array) = bytes.try_into() {
-                            let _is_new = store.add_hash(hash_array);
-                        }
+                    if let Ok(hash_array) = Hash512::from_base64(&hash_str) {
+                        let _is_new = store.add_hash(hash_array);
                     }
                 }
                 HashCommand::Contains(hash_str, tx) => {
                     // Decode base64 hash in the worker thread
-                    let exists = if let Ok(bytes) = BASE64.decode(&hash_str) {
-                        if let Ok(hash_array) = bytes.try_into() {
-                            store.contains(&hash_array)
-                        } else {
-                            false
-                        }
+                    let exists = if let Ok(hash_array) = Hash512::from_base64(&hash_str) {
+                        store.contains(&hash_array)
                     } else {
                         false
                     };
@@ -262,53 +298,16 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
 
     fn get_thread_index(&self, hash_str: &str) -> usize {
         // Decode base64 to get the hash for thread distribution
-        let hash: Hash512 = if let Ok(bytes) = BASE64.decode(hash_str) {
-            if let Ok(hash_array) = bytes.try_into() {
-                hash_array
-            } else {
-                return 0; // fallback to first thread
-            }
+        let hash: Hash512 = if let Ok(hash_array) = Hash512::from_base64(hash_str) {
+            hash_array
         } else {
             return 0; // fallback to first thread
         };
 
-        // Use the first PREFIX_SIZE bits to determine which thread to use
-        let byte_start = 0;
-        let bit_start = 0;
-
-        let mut thread_index = 0usize;
-        let mut bits_collected = 0;
+        // Use the first bits to determine which thread to use
         let num_threads = self.threads.len();
         let bits_needed = (num_threads as f64).log2().ceil() as usize;
-
-        for i in 0..((bits_needed + 7) / 8) {
-            if byte_start + i >= hash.len() || bits_collected >= bits_needed {
-                break;
-            }
-
-            let byte = hash[byte_start + i];
-            let available_bits = 8 - if i == 0 { bit_start } else { 0 };
-            let bits_to_take = std::cmp::min(available_bits, bits_needed - bits_collected);
-
-            if bits_to_take == 0 {
-                break;
-            }
-
-            let shift = if i == 0 { bit_start } else { 0 };
-            let mask = if bits_to_take >= 32 {
-                u32::MAX
-            } else {
-                (1u32 << bits_to_take) - 1
-            };
-            let extracted = ((byte >> shift) as u32) & mask;
-
-            if bits_collected < 32 {
-                thread_index |= (extracted as usize) << bits_collected;
-            }
-            bits_collected += bits_to_take;
-        }
-
-        thread_index % num_threads
+        hash.to_index(0, bits_needed) % num_threads
     }
 
     pub fn add_hash(&self, hash_str: String) -> bool {
@@ -516,13 +515,9 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
 
     pub fn get_merkle_proof_from_base64(&self, hash_str: &str) -> Option<Vec<(Hash512, Hash512)>> {
         // Decode base64 hash in the service
-        if let Ok(bytes) = BASE64.decode(hash_str) {
-            if let Ok(hash_array) = bytes.try_into() {
-                let tree = self.merkle_tree.read().unwrap();
-                tree.as_ref()?.get(&hash_array)
-            } else {
-                None
-            }
+        if let Ok(hash_array) = Hash512::from_base64(hash_str) {
+            let tree = self.merkle_tree.read().unwrap();
+            tree.as_ref()?.get(&hash_array)
         } else {
             None
         }
@@ -532,13 +527,13 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
         // Get the raw proof and encode it as base64 strings
         self.get_merkle_proof_from_base64(hash_str).map(|proof| {
             proof.into_iter()
-                .map(|(left, right)| (BASE64.encode(left), BASE64.encode(right)))
+                .map(|(left, right)| (left.to_base64(), right.to_base64()))
                 .collect()
         })
     }
 
     pub fn get_merkle_tree_root_base64(&self) -> Option<String> {
-        self.get_merkle_tree_root().map(|root| BASE64.encode(root))
+        self.get_merkle_tree_root().map(|root| root.to_base64())
     }
 
     pub fn get_last_update_timestamp(&self) -> Option<u64> {
