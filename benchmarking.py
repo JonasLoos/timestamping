@@ -12,24 +12,67 @@ def generate_hashes(count):
     """Precalculate all hashes before starting the benchmark"""
     print(f"Generating {count:,} random hashes...")
     hashes = []
-    for i in range(count):
-        random_hash_bytes = secrets.token_bytes(64)
-        random_hash_base64 = base64.b64encode(random_hash_bytes).decode('utf-8')
-        hashes.append(random_hash_base64)
+    # Generate all random bytes at once
+    all_random_bytes = secrets.token_bytes(64 * count)
+    # Process in chunks of 64 bytes
+    for i in range(0, len(all_random_bytes), 64):
+        chunk = all_random_bytes[i:i+64]
+        hashes.append(base64.b64encode(chunk).decode('utf-8'))
 
         if (i + 1) % 100000 == 0:
-            print(f"Generated {i + 1:,} hashes...")
+            print(f"Generated {i + 1:,} hashes...", end="\r")
 
+    print(f'Generated {count:,} hashes')
     print(f"Hash generation complete!")
     return hashes
 
-async def send_hash_request(session, hash_data):
-    """Send a pre-generated hash to the server"""
+async def send_batch_request(session, hashes_batch):
+    """Send a batch of hashes to the server"""
+    async with session.post(f"{target_url}/add-batch", json={"hashes": hashes_batch}) as response:
+        return await response.json()
+
+async def send_single_request(session, hash_data):
+    """Send a single hash to the server (fallback)"""
     async with session.post(f"{target_url}/add", json={"hash": hash_data}) as response:
         return await response.json()
 
-async def worker(session, semaphore, hash_queue, completed_counter):
-    """Worker that processes hashes from the queue"""
+async def worker_batch(session, semaphore, hash_queue, completed_counter, batch_size=100):
+    """Worker that processes hashes in batches from the queue"""
+    while True:
+        # Collect a batch of hashes
+        batch = []
+        for _ in range(batch_size):
+            try:
+                hash_data = hash_queue.get_nowait()
+                batch.append(hash_data)
+            except asyncio.QueueEmpty:
+                break
+        
+        if not batch:
+            break
+
+        async with semaphore:
+            try:
+                await send_batch_request(session, batch)
+                completed_counter['count'] += len(batch)
+            except Exception as e:
+                # Fallback to individual requests if batch fails
+                print(f"Batch request failed, falling back to individual requests: {e}")
+                for hash_data in batch:
+                    try:
+                        await send_single_request(session, hash_data)
+                        completed_counter['count'] += 1
+                    except Exception as e2:
+                        print(f"Individual request also failed: {e2}")
+
+        if completed_counter['count'] % 10000 == 0:
+            elapsed = time.time() - completed_counter['start_time']
+            rate = completed_counter['count'] / elapsed
+            print(f"Completed {completed_counter['count']} requests. Rate: {rate:.2f} req/sec", end="\r")
+    print()
+
+async def worker_single(session, semaphore, hash_queue, completed_counter):
+    """Worker that processes individual hashes from the queue (fallback)"""
     while True:
         try:
             # Get next hash from queue (non-blocking)
@@ -38,18 +81,19 @@ async def worker(session, semaphore, hash_queue, completed_counter):
             break
 
         async with semaphore:
-            await send_hash_request(session, hash_data)
-            completed_counter['count'] += 1
+            try:
+                await send_single_request(session, hash_data)
+                completed_counter['count'] += 1
+            except Exception as e:
+                print(f"Request failed: {e}")
 
             if completed_counter['count'] % 10000 == 0:
                 elapsed = time.time() - completed_counter['start_time']
                 rate = completed_counter['count'] / elapsed
-                print(f"Completed {completed_counter['count']} requests. Rate: {rate:.2f} req/sec")
+                print(f"Completed {completed_counter['count']} requests. Rate: {rate:.2f} req/sec", end="\r")
+    print()
 
-async def batch_requests(total_requests, concurrent_limit):
-    # Precalculate all hashes
-    hashes = generate_hashes(total_requests)
-
+async def batch_requests(hashes, concurrent_limit, use_batch=True, batch_size=100):
     # Create a queue with all hashes
     hash_queue = asyncio.Queue()
     for hash_data in hashes:
@@ -59,28 +103,50 @@ async def batch_requests(total_requests, concurrent_limit):
         semaphore = asyncio.Semaphore(concurrent_limit)
         completed_counter = {'count': 0, 'start_time': time.time()}
 
-        # Create worker tasks that will process hashes from the queue
-        workers = [
-            worker(session, semaphore, hash_queue, completed_counter)
-            for _ in range(concurrent_limit)
-        ]
+        if use_batch:
+            # Create worker tasks that will process hashes in batches from the queue
+            workers = [
+                worker_batch(session, semaphore, hash_queue, completed_counter, batch_size)
+                for _ in range(concurrent_limit)
+            ]
+        else:
+            # Create worker tasks that will process individual hashes from the queue
+            workers = [
+                worker_single(session, semaphore, hash_queue, completed_counter)
+                for _ in range(concurrent_limit)
+            ]
 
         # Wait for all workers to complete
         await asyncio.gather(*workers)
 
 async def main():
-    total_requests = 1_000_000
     concurrent_limit = 2
+    batch_size = 10000
 
-    print(f"Starting benchmark with {total_requests:,} total requests, {concurrent_limit} concurrent...")
+    # Precalculate all hashes
+    hashes = generate_hashes(5_000_000)
+
+    print(f"Starting batch benchmark with {len(hashes):,} total requests, {concurrent_limit} concurrent, batch size {batch_size}...")
     start = time.time()
 
-    await batch_requests(total_requests, concurrent_limit)
+    await batch_requests(hashes, concurrent_limit, use_batch=True, batch_size=batch_size)
 
     elapsed = time.time() - start
-    rate = total_requests / elapsed
-    print(f"\nCompleted in {elapsed:.2f} seconds")
+    rate = len(hashes) / elapsed
+    print(f"\nBatch mode completed in {elapsed:.2f} seconds")
     print(f"Average rate: {rate:.2f} requests/second")
+
+    # Test single mode for comparison
+    # print(f"\nStarting single request benchmark with {total_requests:,} total requests, {concurrent_limit} concurrent...")
+    # start = time.time()
+
+    # total_requests = 100_000
+    # await batch_requests(total_requests, concurrent_limit, use_batch=False)
+
+    # elapsed = time.time() - start
+    # rate = total_requests / elapsed
+    # print(f"\nSingle mode completed in {elapsed:.2f} seconds")
+    # print(f"Average rate: {rate:.2f} requests/second")
 
 if __name__ == "__main__":
     asyncio.run(main())

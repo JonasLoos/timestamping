@@ -24,6 +24,28 @@ struct AddHashResponse {
     is_new: bool,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct AddBatchRequest {
+    hashes: Vec<String>, // base64 encoded bytes
+}
+
+#[derive(Debug, Serialize)]
+struct AddBatchResponse {
+    success: bool,
+    message: String,
+    total_hashes: usize,
+    new_hashes: usize,
+    existing_hashes: usize,
+    results: Vec<BatchHashResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchHashResult {
+    hash: String, // base64 encoded bytes
+    is_new: bool,
+    error: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CheckHashRequest {
     hash: String, // base64 encoded bytes
@@ -77,6 +99,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/add", post(add))
+        .route("/add-batch", post(add_batch))
         .route("/check", post(check))
         .route("/update-tree", post(update_tree))
         .route("/stats", get(get_stats))
@@ -85,6 +108,7 @@ async fn main() {
 
     println!("Server starting on http://127.0.0.1:3427");
     println!("POST /add - Add a 512-bit hash");
+    println!("POST /add-batch - Add multiple 512-bit hashes");
     println!("POST /check - Check if hash exists and get merkle proof");
     println!("POST /update-tree - Update the merkle tree");
     println!("GET /stats - Get storage statistics");
@@ -175,6 +199,71 @@ async fn add(
             success: true,
             message: if is_new { MSG_HASH_ADDED } else { MSG_HASH_EXISTS },
             is_new,
+        }),
+    )
+}
+
+async fn add_batch(
+    axum::extract::State(service): axum::extract::State<Arc<TimestampingService<INDEX_SIZE, PREFIX_SIZE>>>,
+    Json(payload): Json<AddBatchRequest>,
+) -> (StatusCode, Json<AddBatchResponse>) {
+    let mut results = Vec::new();
+    let mut new_hashes = 0;
+    let mut existing_hashes = 0;
+
+    for hash_str in payload.hashes {
+        // Decode base64 hash
+        let hash_bytes = match BASE64.decode(&hash_str) {
+            Ok(bytes) => match bytes.try_into() {
+                Ok(hash_array) => hash_array,
+                Err(_) => {
+                    results.push(BatchHashResult {
+                        hash: hash_str,
+                        is_new: false,
+                        error: Some(MSG_INVALID_LENGTH.to_string()),
+                    });
+                    continue;
+                }
+            },
+            Err(_) => {
+                results.push(BatchHashResult {
+                    hash: hash_str,
+                    is_new: false,
+                    error: Some(MSG_INVALID_BASE64.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let is_new = service.hash_store.add_hash(hash_bytes);
+        if is_new {
+            new_hashes += 1;
+        } else {
+            existing_hashes += 1;
+        }
+
+        results.push(BatchHashResult {
+            hash: hash_str,
+            is_new,
+            error: None,
+        });
+    }
+
+    let total_hashes = results.len();
+    let message = format!(
+        "Batch processed: {} total, {} new, {} existing",
+        total_hashes, new_hashes, existing_hashes
+    );
+
+    (
+        StatusCode::OK,
+        Json(AddBatchResponse {
+            success: true,
+            message,
+            total_hashes,
+            new_hashes,
+            existing_hashes,
+            results,
         }),
     )
 }

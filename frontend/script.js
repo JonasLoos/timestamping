@@ -302,35 +302,54 @@ async function addAllHashesToStore() {
     try {
         addAllHashesBtn.disabled = true;
 
-        for (const [fileName, hash] of fileHashes) {
+        // Use batch endpoint for better performance
+        const hashes = Array.from(fileHashes.values());
+        
+        // Update all files to processing status
+        for (const fileName of fileHashes.keys()) {
             updateFileStatus(fileName, 'upload', 'processing', 'Adding to store...', '');
-            
-            try {
-                const response = await fetch(`${API_BASE_URL}/add`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ hash: hash }),
-                });
+        }
+        
+        const response = await fetch(`${API_BASE_URL}/add-batch`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ hashes: hashes }),
+        });
 
-                const result = await response.json();
+        const result = await response.json();
 
-                if (response.ok && result.success) {
-                    if (result.is_new) {
-                        updateFileStatus(fileName, 'upload', 'success', 'Successfully added to store', '');
-                    } else {
-                        updateFileStatus(fileName, 'upload', 'warning', 'Already exists in store', '');
-                    }
+        if (response.ok && result.success) {
+            // Update individual file statuses based on batch results
+            const fileNameArray = Array.from(fileHashes.keys());
+            result.results.forEach((hashResult, index) => {
+                const fileName = fileNameArray[index];
+                if (hashResult.error) {
+                    updateFileStatus(fileName, 'upload', 'error', `Failed: ${hashResult.error}`, '');
+                } else if (hashResult.is_new) {
+                    updateFileStatus(fileName, 'upload', 'success', 'Successfully added to store', '');
                 } else {
-                    updateFileStatus(fileName, 'upload', 'error', `Failed: ${result.message}`, '');
+                    updateFileStatus(fileName, 'upload', 'warning', 'Already exists in store', '');
                 }
-            } catch (error) {
-                updateFileStatus(fileName, 'upload', 'error', `Network error: ${error.message}`, '');
+            });
+            
+            // Show batch summary
+            console.log(`Batch processed: ${result.total_hashes} total, ${result.new_hashes} new, ${result.existing_hashes} existing`);
+        } else {
+            // Handle batch failure
+            for (const fileName of fileHashes.keys()) {
+                updateFileStatus(fileName, 'upload', 'error', `Batch failed: ${result.message}`, '');
             }
         }
 
         await refreshStats();
+    } catch (error) {
+        console.error('Batch request error:', error);
+        // Handle network errors
+        for (const fileName of fileHashes.keys()) {
+            updateFileStatus(fileName, 'upload', 'error', `Network error: ${error.message}`, '');
+        }
     } finally {
         addAllHashesBtn.disabled = false;
     }
