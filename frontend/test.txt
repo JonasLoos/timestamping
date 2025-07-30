@@ -1,2 +1,0 @@
-This is a test file for the timestamping system.
-It will be hashed using SHA-512 and the hash can be stored or checked. 
