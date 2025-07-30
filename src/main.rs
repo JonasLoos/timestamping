@@ -129,8 +129,8 @@ mod tests {
         let store = HashStore::<8, 0>::new();
 
         // Create test hashes
-        let hash1: Hash512 = [1u8; 64];
-        let hash2: Hash512 = [2u8; 64];
+        let hash1: Hash512 = [1u64; 8];
+        let hash2: Hash512 = [2u64; 8];
 
         // Test initial state
         assert_eq!(store.len(), 0);

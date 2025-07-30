@@ -5,7 +5,7 @@ use std::sync::mpsc::{channel, Sender, Receiver};
 use sha2::{Digest, Sha512};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
-pub type Hash512 = [u8; 64];
+pub type Hash512 = [u64; 8];
 
 #[derive(Debug)]
 pub enum Hash512Error {
@@ -40,56 +40,47 @@ pub trait Hash512Ops {
 impl Hash512Ops for Hash512 {
     fn from_base64(s: &str) -> Result<Self, Hash512Error> {
         let bytes = BASE64.decode(s)?;
-        let hash_array: Hash512 = bytes.try_into().map_err(|_| Hash512Error::InvalidLengthError)?;
+        if bytes.len() != 64 {
+            return Err(Hash512Error::InvalidLengthError);
+        }
+        
+        // Convert Vec<u8> to [u64; 8] by reading 8 bytes at a time
+        let mut hash_array = [0u64; 8];
+        for i in 0..8 {
+            let start = i * 8;
+            let end = start + 8;
+            if end <= bytes.len() {
+                hash_array[i] = u64::from_le_bytes([
+                    bytes[start], bytes[start + 1], bytes[start + 2], bytes[start + 3],
+                    bytes[start + 4], bytes[start + 5], bytes[start + 6], bytes[start + 7]
+                ]);
+            }
+        }
         Ok(hash_array)
     }
 
     fn to_base64(&self) -> String {
-        BASE64.encode(self)
+        // Convert [u64; 8] to Vec<u8> for base64 encoding
+        let mut bytes = Vec::with_capacity(64);
+        for &u64_val in self {
+            bytes.extend_from_slice(&u64_val.to_le_bytes());
+        }
+        BASE64.encode(bytes)
     }
 
     fn to_index(&self, prefix_size: usize, index_size: usize) -> usize {
-        // Extract index_size bits starting from prefix_size
-        let byte_start = prefix_size / 8;
-        let bit_start = prefix_size % 8;
-
-        let mut index = 0usize;
-        let mut bits_collected = 0;
-
-        for i in 0..((index_size + 7) / 8) {
-            if byte_start + i >= self.len() || bits_collected >= index_size {
-                break;
-            }
-
-            let byte = self[byte_start + i];
-            let available_bits = 8 - if i == 0 { bit_start } else { 0 };
-            let bits_to_take = std::cmp::min(available_bits, index_size - bits_collected);
-
-            if bits_to_take == 0 {
-                break;
-            }
-
-            let shift = if i == 0 { bit_start } else { 0 };
-            // Use u32 to avoid overflow, then convert to usize
-            let mask = if bits_to_take >= 32 {
-                u32::MAX
-            } else {
-                (1u32 << bits_to_take) - 1
-            };
-            let extracted = ((byte >> shift) as u32) & mask;
-
-            if bits_collected < 32 {
-                index |= (extracted as usize) << bits_collected;
-            }
-            bits_collected += bits_to_take;
-        }
-
-        // Ensure we don't exceed index_size bits
-        if index_size >= 32 {
-            index
+        // Extract index_size bits starting from prefix_size, assuming prefix_size + index_size <= 64
+        let bit_start = prefix_size % 64;
+        let u64_val = self[0]; // Only use the first u64
+        
+        let mask = if index_size >= 64 {
+            u64::MAX
         } else {
-            index & ((1usize << index_size) - 1)
-        }
+            (1u64 << index_size) - 1
+        };
+        
+        let extracted = (u64_val >> bit_start) & mask;
+        extracted as usize
     }
 }
 
@@ -384,7 +375,7 @@ impl HashArray {
         let depth = (n as f64).log2().ceil() as usize;
         let tree_size = (1 << (depth + 1)) - 1;
 
-        let mut tree_data = vec![[0u8; 64]; tree_size];
+        let mut tree_data = vec![[0u64; 8]; tree_size];
 
         // Copy data to leaves (rightmost part of the tree)
         let leaf_start = (1 << depth) - 1;
@@ -401,11 +392,29 @@ impl HashArray {
                 let right_child_idx = child_level_start + 2 * i + 1;
 
                 let mut hasher = Sha512::new();
-                hasher.update(&tree_data[left_child_idx]);
-                hasher.update(&tree_data[right_child_idx]);
+                // Convert [u64; 8] to bytes for hashing
+                let mut left_bytes = Vec::with_capacity(64);
+                for &u64_val in &tree_data[left_child_idx] {
+                    left_bytes.extend_from_slice(&u64_val.to_le_bytes());
+                }
+                let mut right_bytes = Vec::with_capacity(64);
+                for &u64_val in &tree_data[right_child_idx] {
+                    right_bytes.extend_from_slice(&u64_val.to_le_bytes());
+                }
+                hasher.update(&left_bytes);
+                hasher.update(&right_bytes);
                 let result = hasher.finalize();
 
-                tree_data[parent_idx].copy_from_slice(&result[..64]);
+                // Convert result back to [u64; 8]
+                let mut parent_hash = [0u64; 8];
+                for i in 0..8 {
+                    let start = i * 8;
+                    parent_hash[i] = u64::from_le_bytes([
+                        result[start], result[start + 1], result[start + 2], result[start + 3],
+                        result[start + 4], result[start + 5], result[start + 6], result[start + 7]
+                    ]);
+                }
+                tree_data[parent_idx] = parent_hash;
             }
         }
 
@@ -428,7 +437,7 @@ impl MerkleTree {
     pub fn new(depth: usize) -> Self {
         let size = if depth == 0 { 0 } else { (1 << (depth + 1)) - 1 };
         Self {
-            data: vec![[0u8; 64]; size],
+            data: vec![[0u64; 8]; size],
             depth,
             leaf_count: 0,
         }

@@ -5,7 +5,7 @@ use timestamping::storage::{HashStore, Hash512};
 // Generate a random 512-bit hash
 fn generate_random_hash() -> Hash512 {
     let mut rng = rand::thread_rng();
-    let mut hash = [0u8; 64];
+    let mut hash = [0u64; 8];
     rng.fill(&mut hash);
     hash
 }
