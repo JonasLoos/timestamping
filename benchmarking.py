@@ -16,7 +16,6 @@ def generate_hashes(count):
         chunk = all_random_bytes[i:i+64]
         hashes.append(chunk)
 
-    print(f'Generated {count:,} hashes')
     print(f"Hash generation complete!")
     return hashes
 
@@ -58,8 +57,7 @@ async def worker_batch(session, semaphore, hash_queue, completed_counter, batch_
         if completed_counter['count'] % 10000 == 0:
             elapsed = time.time() - completed_counter['start_time']
             rate = completed_counter['count'] / elapsed
-            print(f"Completed {completed_counter['count']} requests. Rate: {rate:.2f} req/sec", end="\r")
-    print()
+            print(f"\rCompleted {completed_counter['count']} requests. Rate: {rate:.2f} req/sec", end="", flush=True)
 
 async def batch_requests(hashes, concurrent_limit, batch_size=100):
     # Create a queue with all hashes

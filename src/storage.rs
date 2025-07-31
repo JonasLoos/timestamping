@@ -52,9 +52,8 @@ impl Hash512Ops for Hash512 {
 
     fn to_index(&self, prefix_size: usize, index_size: usize) -> usize {
         // Extract index_size bits starting from prefix_size, assuming prefix_size + index_size <= 64
-        if prefix_size + index_size > 64 {
-            panic!("Prefix size + index size must be less than or equal to 64");
-        }
+        if prefix_size + index_size > 64 { panic!("Prefix size + index size must be less than or equal to 64"); }
+        if index_size == 0 { return 0; }
 
         // Only use the first u64
         ((self[0] << prefix_size) >> (64 - index_size)) as usize
