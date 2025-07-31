@@ -56,17 +56,8 @@ impl Hash512Ops for Hash512 {
             panic!("Prefix size + index size must be less than or equal to 64");
         }
 
-        let bit_start = prefix_size % 64;
-        let u64_val = self[0]; // Only use the first u64
-
-        let mask = if index_size == 64 {
-            u64::MAX
-        } else {
-            (1u64 << index_size) - 1
-        };
-
-        let extracted = (u64_val >> bit_start) & mask;
-        extracted as usize
+        // Only use the first u64
+        ((self[0] << prefix_size) >> (64 - index_size)) as usize
     }
 }
 
@@ -499,5 +490,328 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
             .unwrap()
             .as_ref()
             .and_then(|tree| tree.root())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_hash512_byte_conversion() {
+        // convert hash to bytes
+        let hash = [1u64, 2u64, 3u64, 4u64, 5u64, 6u64, 7u64, 8u64];
+        let bytes = hash.to_bytes();
+        assert_eq!(bytes.len(), 64);
+
+        // Convert back and verify
+        let reconstructed = Hash512::from_bytes(&bytes).unwrap();
+        assert_eq!(reconstructed, hash);
+
+        // Test invalid length
+        let invalid_bytes = vec![1u8; 32];
+        assert!(Hash512::from_bytes(&invalid_bytes).is_err());
+    }
+
+    #[test]
+    fn test_hash512_to_index() {
+        let hash = [0x1234567890ABCDEFu64, 0, 0, 0, 0, 0, 0, 0];
+
+        assert_eq!(hash.to_index(0, 8), 0x12);
+        assert_eq!(hash.to_index(8, 8), 0x34);
+        assert_eq!(hash.to_index(0, 1), 0);
+        assert_eq!(hash.to_index(0, 64), 0x1234567890ABCDEF);
+    }
+
+    #[test]
+    #[should_panic(expected = "Prefix size + index size must be less than or equal to 64")]
+    fn test_hash512_to_index_panic() {
+        let hash = [0u64; 8];
+        hash.to_index(32, 33); // This should panic
+    }
+
+    #[test]
+    fn test_hash_store_basic_operations() {
+        let store = HashStore::<8, 0>::new();
+
+        // Test empty store
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.occupied_slots(), 0);
+
+        // Create a test hash
+        let hash = [1u64, 2u64, 3u64, 4u64, 5u64, 6u64, 7u64, 8u64];
+
+        // Test adding hash
+        assert!(store.add_hash(hash));
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.occupied_slots(), 1);
+        assert!(store.contains(&hash));
+
+        // Test adding duplicate
+        assert!(!store.add_hash(hash));
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.occupied_slots(), 1);
+
+        // Test adding different hash
+        let hash2 = [u64::MAX, 10u64, 11u64, 12u64, 13u64, 14u64, 15u64, 16u64];
+        assert!(store.add_hash(hash2));
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.occupied_slots(), 2);
+
+        // Test adding very similar hash (that gets added to the same bucket)
+        let hash3 = [u64::MAX, 10u64, 11u64, 12u64, 13u64, 14u64, 15u64, 15u64];
+        assert!(store.add_hash(hash3));
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.occupied_slots(), 2);
+    }
+
+    #[test]
+    fn test_hash_store_ordering() {
+        let store = HashStore::<8, 0>::new();
+
+        let hash1 = [1u64, 0, 0, 0, 0, 0, 0, 0];
+        let hash2 = [2u64, 0, 0, 0, 0, 0, 0, 0];
+        let hash3 = [3u64, 0, 0, 0, 0, 0, 0, 0];
+        let hash4 = [u64::MAX, 0, 0, 0, 0, 0, 0, 0];
+
+        // Add in reverse order
+        store.add_hash(hash3);
+        store.add_hash(hash1);
+        store.add_hash(hash4);
+        store.add_hash(hash2);
+
+        let array = store.to_array();
+        assert_eq!(array.data.len(), 4);
+        // Should be sorted
+        assert_eq!(array.data[0], hash1);
+        assert_eq!(array.data[1], hash2);
+        assert_eq!(array.data[2], hash3);
+        assert_eq!(array.data[3], hash4);
+    }
+
+    #[test]
+    fn test_multi_threaded_hash_store() {
+        let store = MultiThreadedHashStore::<8, 0>::new(4);
+
+        // Test empty store
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.occupied_slots(), 0);
+
+        let hash = [1u64, 2u64, 3u64, 4u64, 5u64, 6u64, 7u64, 8u64];
+
+        // Test adding hash
+        store.add_hash(hash);
+
+        // Give some time for the operation to complete
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert!(store.contains(&hash));
+
+        // Test adding duplicate
+        store.add_hash(hash);
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Test adding different hash
+        let hash2 = [9u64, 10u64, 11u64, 12u64, 13u64, 14u64, 15u64, 16u64];
+        store.add_hash(hash2);
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert!(store.contains(&hash2));
+    }
+
+    #[test]
+    fn test_merkle_tree_basic() {
+        let array = HashArray {
+            data: vec![
+                [1u64, 0, 0, 0, 0, 0, 0, 0],
+                [2u64, 0, 0, 0, 0, 0, 0, 0],
+                [3u64, 0, 0, 0, 0, 0, 0, 0],
+                [4u64, 0, 0, 0, 0, 0, 0, 0],
+            ]
+        };
+
+        let tree = array.to_merkle_tree();
+
+        assert_eq!(tree.leaf_count, 4);
+        assert_eq!(tree.depth, 2);
+        assert!(tree.root().is_some());
+        assert_eq!(tree.size(), 7); // 2^3 - 1 = 7 nodes
+    }
+
+    #[test]
+    fn test_merkle_tree_empty() {
+        let array = HashArray { data: vec![] };
+        let tree = array.to_merkle_tree();
+
+        assert_eq!(tree.leaf_count, 0);
+        assert_eq!(tree.depth, 0);
+        assert!(tree.root().is_none());
+        assert_eq!(tree.size(), 0);
+    }
+
+    #[test]
+    fn test_merkle_tree_single_element() {
+        let hash = [1u64, 0, 0, 0, 0, 0, 0, 0];
+        let array = HashArray { data: vec![hash] };
+        let tree = array.to_merkle_tree();
+
+        assert_eq!(tree.leaf_count, 1);
+        assert_eq!(tree.depth, 0);
+        assert!(tree.root().is_some());
+        assert_eq!(tree.root().unwrap(), hash);
+    }
+
+    #[test]
+    fn test_merkle_proof() {
+        let hashes = vec![
+            [1u64, 0, 0, 0, 0, 0, 0, 0],
+            [2u64, 0, 0, 0, 0, 0, 0, 0],
+            [3u64, 0, 0, 0, 0, 0, 0, 0],
+            [4u64, 0, 0, 0, 0, 0, 0, 0],
+        ];
+
+        let array = HashArray { data: hashes.clone() };
+        let tree = array.to_merkle_tree();
+
+        // Test proof for first hash
+        let proof = tree.get(&hashes[0]);
+        assert!(proof.is_some());
+
+        // Test proof for non-existent hash
+        let non_existent = [999u64, 0, 0, 0, 0, 0, 0, 0];
+        let proof = tree.get(&non_existent);
+        assert!(proof.is_none());
+    }
+
+    #[test]
+    fn test_timestamping_service() {
+        let service = TimestampingService::<8, 0>::with_threads(4);
+
+        // Test initial state
+        assert_eq!(service.get_merkle_tree_size(), 0);
+        assert!(service.get_merkle_tree_root().is_none());
+        assert!(service.get_last_update_timestamp().is_none());
+
+        // Add some hashes
+        let hash1 = [1u64, 0, 0, 0, 0, 0, 0, 0];
+        let hash2 = [2u64, 0, 0, 0, 0, 0, 0, 0];
+
+        service.hash_store.add_hash(hash1);
+        service.hash_store.add_hash(hash2);
+
+        // Give time for operations to complete
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Update merkle tree
+        service.update_merkle_tree();
+
+        // Test updated state
+        assert!(service.get_merkle_tree_root().is_some());
+        assert!(service.get_last_update_timestamp().is_some());
+        assert!(service.get_merkle_tree_size() > 0);
+
+        // Test merkle proof
+        let proof = service.get_merkle_proof(&hash1);
+        assert!(proof.is_some());
+
+        // Test merkle root bytes
+        let root_bytes = service.get_merkle_tree_root_bytes();
+        assert!(root_bytes.is_some());
+        assert_eq!(root_bytes.unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_hash_store_collision_handling() {
+        let store = HashStore::<2, 0>::new(); // Only 4 buckets
+
+        // Create hashes that will collide in the same bucket
+        let hash1 = [1u64, 0, 0, 0, 0, 0, 0, 0];
+        let hash2 = [5u64, 0, 0, 0, 0, 0, 0, 0]; // Same index as hash1
+        let hash3 = [9u64, 0, 0, 0, 0, 0, 0, 0]; // Same index as hash1
+
+        store.add_hash(hash1);
+        store.add_hash(hash2);
+        store.add_hash(hash3);
+
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.occupied_slots(), 1); // Only one bucket used
+
+        assert!(store.contains(&hash1));
+        assert!(store.contains(&hash2));
+        assert!(store.contains(&hash3));
+    }
+
+    #[test]
+    fn test_hash512_equality() {
+        let hash1 = [1u64, 2u64, 3u64, 4u64, 5u64, 6u64, 7u64, 8u64];
+        let hash2 = [1u64, 2u64, 3u64, 4u64, 5u64, 6u64, 7u64, 8u64];
+        let hash3 = [9u64, 10u64, 11u64, 12u64, 13u64, 14u64, 15u64, 16u64];
+
+        assert_eq!(hash1, hash2);
+        assert_ne!(hash1, hash3);
+    }
+
+    #[test]
+    fn test_hash512_ordering() {
+        let hash1 = [1u64, 0, 0, 0, 0, 0, 0, 0];
+        let hash2 = [2u64, 0, 0, 0, 0, 0, 0, 0];
+        let hash3 = [1u64, 1u64, 0, 0, 0, 0, 0, 0];
+
+        assert!(hash1 < hash2);
+        assert!(hash1 < hash3);
+        assert!(hash2 > hash3);
+    }
+
+    #[test]
+    fn test_merkle_tree_large_dataset() {
+        let mut hashes = Vec::new();
+        for i in 0..100 {
+            hashes.push([i as u64, 0, 0, 0, 0, 0, 0, 0]);
+        }
+
+        let array = HashArray { data: hashes.clone() };
+        let tree = array.to_merkle_tree();
+
+        assert_eq!(tree.leaf_count, 100);
+        assert!(tree.root().is_some());
+
+        // Test proof for middle element
+        let proof = tree.get(&hashes[50]);
+        assert!(proof.is_some());
+    }
+
+    #[test]
+    fn test_multi_threaded_hash_store_concurrent_access() {
+        let store = Arc::new(MultiThreadedHashStore::<8, 0>::new(4));
+        let mut handles = Vec::new();
+
+        // Spawn multiple threads adding hashes concurrently
+        for i in 0..10 {
+            let store_clone = Arc::clone(&store);
+            let handle = std::thread::spawn(move || {
+                for j in 0..100 {
+                    let hash = [(i * 100 + j) as u64, 0, 0, 0, 0, 0, 0, 0];
+                    store_clone.add_hash(hash);
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Give some time for all operations to complete
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Verify all hashes are present
+        for i in 0..10 {
+            for j in 0..100 {
+                let hash = [(i * 100 + j) as u64, 0, 0, 0, 0, 0, 0, 0];
+                assert!(store.contains(&hash));
+            }
+        }
     }
 }
