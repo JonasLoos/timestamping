@@ -572,16 +572,18 @@ async function checkHash(hashBytes) {
 function showManualResult(type, title, message, merkleProof = null) {
     let merkleProofHtml = '';
     if (merkleProof && merkleProof.length > 0) {
+        console.log(merkleProof);
         merkleProofHtml = `
             <div class="merkle-proof">
+                ${TODO}
                 <h4>Merkle Proof:</h4>
                 <div class="proof-levels">
                     ${merkleProof.map((level, index) => `
                         <div class="proof-level">
                             <strong>Level ${index + 1}:</strong>
                             <div class="proof-pair">
-                                <div class="proof-hash">Left: ${level[0].substring(0, 16)}...${level[0].substring(level[0].length - 16)}</div>
-                                <div class="proof-hash">Right: ${level[1].substring(0, 16)}...${level[1].substring(level[1].length - 16)}</div>
+                                <div class="proof-hash">Left: ${level[0].map(b => b.toString(16).padStart(2, '0')).join('')}</div>
+                                <div class="proof-hash">Right: ${level[1].map(b => b.toString(16).padStart(2, '0')).join('')}</div>
                             </div>
                         </div>
                     `).join('')}
@@ -618,14 +620,14 @@ function showProofModal(fileName) {
     proofModal.style.display = 'block';
 
     // Verify proof
-    verifyMerkleProof(hash, proof, currentMerkleRoot);
+    displayMerkleProof(hash, proof, currentMerkleRoot);
 }
 
 function hideProofModal() {
     proofModal.style.display = 'none';
 }
 
-async function verifyMerkleProof(leafHashBytes, proof, expectedRoot) {
+async function displayMerkleProof(leafHashBytes, proof, expectedRoot) {
     verificationStatus.textContent = 'Verifying proof...';
     verificationResult.className = 'verification-result';
     verificationDetails.textContent = '';
