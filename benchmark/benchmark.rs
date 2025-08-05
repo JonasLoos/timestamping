@@ -2,6 +2,8 @@ use std::time::Instant;
 use rand::Rng;
 use timestamping::storage::{HashStore, Hash512};
 
+static SALT: Hash512 = [0, 0, 0, 0, 0, 0, 0, 0];
+
 // Generate a random 512-bit hash
 fn generate_random_hash() -> Hash512 {
     let mut rng = rand::thread_rng();
@@ -33,7 +35,7 @@ fn benchmark_insertion_speed() {
         let hashes = generate_random_hashes(size);
 
         // Test 16-bit index (65,536 buckets)
-        let store_16 = HashStore::<16, 0>::new();
+        let store_16 = HashStore::<16, 0>::new(SALT);
         let start = Instant::now();
         for hash in &hashes {
             store_16.add_hash(*hash);
@@ -43,7 +45,7 @@ fn benchmark_insertion_speed() {
         println!("  16-bit index: {:.2} hashes/sec ({:.2?})", hashes_per_second_16, duration_16);
 
         // Test 20-bit index (1,048,576 buckets)
-        let store_20 = HashStore::<20, 0>::new();
+        let store_20 = HashStore::<20, 0>::new(SALT);
         let start = Instant::now();
         for hash in &hashes {
             store_20.add_hash(*hash);
@@ -53,7 +55,7 @@ fn benchmark_insertion_speed() {
         println!("  20-bit index: {:.2} hashes/sec ({:.2?})", hashes_per_second_20, duration_20);
 
         // Test 24-bit index (16,777,216 buckets)
-        let store_24 = HashStore::<24, 0>::new();
+        let store_24 = HashStore::<24, 0>::new(SALT);
         let start = Instant::now();
         for hash in &hashes {
             store_24.add_hash(*hash);
@@ -75,7 +77,7 @@ fn benchmark_lookup_performance() {
     let lookup_count = 10_000;
 
     // Insert hashes
-    let store = HashStore::<16, 0>::new();
+    let store = HashStore::<16, 0>::new(SALT);
     let hashes = generate_random_hashes(insert_count);
     for hash in &hashes {
         store.add_hash(*hash);

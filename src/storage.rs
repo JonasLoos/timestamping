@@ -72,30 +72,41 @@ impl HashLL {
     }
 }
 
+fn hash512(a: Hash512, b: Hash512) -> Hash512 {
+    let mut hasher = Sha512::new();
+    hasher.update(&a.to_bytes());
+    hasher.update(&b.to_bytes());
+    let result = hasher.finalize();
+    Hash512::from_bytes(&result).unwrap()
+}
+
 #[derive(Debug)]
 pub struct HashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> {
     data: Arc<RwLock<Vec<Option<Box<HashLL>>>>>,
+    salt: Hash512,
     num_elements: Arc<RwLock<usize>>,
     buckets_filled: Arc<RwLock<usize>>,
 }
 
 impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PREFIX_SIZE> {
-    pub fn new() -> Self {
+    pub fn new(salt: Hash512) -> Self {
         let total_buckets = 1 << INDEX_SIZE;
         Self {
             data: Arc::new(RwLock::new(vec![None; total_buckets])),
+            salt,
             num_elements: Arc::new(RwLock::new(0)),
             buckets_filled: Arc::new(RwLock::new(0)),
         }
     }
 
     pub fn add_hash(&self, hash: Hash512) -> bool {
-        let index = hash.to_index(PREFIX_SIZE, INDEX_SIZE);
+        let salted_hash = hash512(hash, self.salt);
+        let index = salted_hash.to_index(PREFIX_SIZE, INDEX_SIZE);
         let mut data = self.data.write().unwrap();
 
         if data[index].is_none() {
             // Add hash to new bucket
-            data[index] = Some(Box::new(HashLL::new(hash, None)));
+            data[index] = Some(Box::new(HashLL::new(salted_hash, None)));
             *self.buckets_filled.write().unwrap() += 1;
             *self.num_elements.write().unwrap() += 1;
             return true;
@@ -104,14 +115,14 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
         // Check if hash already exists and find insertion point
         {
             let bucket = data[index].as_ref().unwrap();
-            if hash == bucket.hash {
+            if salted_hash == bucket.hash {
                 return false; // Hash already exists
             }
 
-            if hash < bucket.hash {
+            if salted_hash < bucket.hash {
                 // Insert at the front
                 let old_bucket = data[index].take().unwrap();
-                data[index] = Some(Box::new(HashLL::new(hash, Some(old_bucket))));
+                data[index] = Some(Box::new(HashLL::new(salted_hash, Some(old_bucket))));
                 *self.num_elements.write().unwrap() += 1;
                 return true;
             }
@@ -123,13 +134,13 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
 
         loop {
             if let Some(next_node) = &current.next {
-                if hash == next_node.hash {
+                if salted_hash == next_node.hash {
                     return false; // Hash already exists
                 }
-                if hash < next_node.hash {
+                if salted_hash < next_node.hash {
                     // Insert between current and next
                     let old_next = current.next.take();
-                    current.next = Some(Box::new(HashLL::new(hash, old_next)));
+                    current.next = Some(Box::new(HashLL::new(salted_hash, old_next)));
                     *self.num_elements.write().unwrap() += 1;
                     return true;
                 }
@@ -137,7 +148,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
                 current = current.next.as_mut().unwrap();
             } else {
                 // Insert at the end
-                current.next = Some(Box::new(HashLL::new(hash, None)));
+                current.next = Some(Box::new(HashLL::new(salted_hash, None)));
                 *self.num_elements.write().unwrap() += 1;
                 return true;
             }
@@ -153,13 +164,14 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
     }
 
     pub fn contains(&self, hash: &Hash512) -> bool {
-        let index = hash.to_index(PREFIX_SIZE, INDEX_SIZE);
+        let salted_hash = hash512(*hash, self.salt);
+        let index = salted_hash.to_index(PREFIX_SIZE, INDEX_SIZE);
         let data = self.data.read().unwrap();
 
         if let Some(node) = &data[index] {
             let mut current = node;
             loop {
-                if current.hash == *hash {
+                if current.hash == salted_hash {
                     return true;
                 }
                 match &current.next {
@@ -171,7 +183,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
         false
     }
 
-    pub fn to_array(&self) -> HashArray {
+    pub fn to_array(&self) -> Vec<Hash512> {
         let mut hashes = Vec::new();
         let data = self.data.read().unwrap();
 
@@ -188,26 +200,27 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> HashStore<INDEX_SIZE, PR
             }
         }
 
-        HashArray { data: hashes }
+        hashes
     }
 }
 
 #[derive(Debug)]
 pub struct MultiThreadedHashStore<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> {
     threads: Vec<Sender<HashCommand>>,
+    salt: Hash512,
 }
 
 #[derive(Debug)]
 enum HashCommand {
     AddHash(Hash512),
     Contains(Hash512, Sender<bool>),
-    GetArray(Sender<HashArray>),
+    GetArray(Sender<Vec<Hash512>>),
     GetLen(Sender<usize>),
     GetOccupiedSlots(Sender<usize>),
 }
 
 impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<INDEX_SIZE, PREFIX_SIZE> {
-    pub fn new(num_threads: usize) -> Self {
+    pub fn new(num_threads: usize, salt: Hash512) -> Self {
         // Ensure num_threads is a power of 2
         if !num_threads.is_power_of_two() {
             panic!("Number of threads must be a power of 2");
@@ -218,7 +231,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
             let (tx, rx) = channel();
             threads.push(tx);
 
-            let store = HashStore::<INDEX_SIZE, PREFIX_SIZE>::new();
+            let store = HashStore::<INDEX_SIZE, PREFIX_SIZE>::new(salt);
 
             thread::spawn(move || {
                 Self::hash_store_worker(store, rx);
@@ -227,6 +240,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
 
         Self {
             threads,
+            salt,
         }
     }
 
@@ -295,7 +309,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
         total
     }
 
-    pub fn to_array(&self) -> HashArray {
+    pub fn to_array(&self) -> Vec<Hash512> {
         let mut all_hashes = Vec::new();
 
         // Collect arrays from all threads
@@ -303,26 +317,33 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> MultiThreadedHashStore<I
             let (response_tx, response_rx) = channel();
             let _ = tx.send(HashCommand::GetArray(response_tx));
             if let Ok(array) = response_rx.recv() {
-                all_hashes.extend(array.data);
+                all_hashes.extend(array);
             }
         }
 
-        HashArray { data: all_hashes }
+        all_hashes
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct HashArray {
+pub struct MerkleTree {
     pub data: Vec<Hash512>,
+    pub salt: Hash512,
+    pub depth: usize,
+    pub leaf_count: usize,
 }
 
-impl HashArray {
-    pub fn to_merkle_tree(&self) -> MerkleTree {
-        if self.data.is_empty() {
-            return MerkleTree::new(0);
+impl MerkleTree {
+    pub fn new(data: Vec<Hash512>, salt: Hash512) -> Self {
+        let n = data.len();
+        if n == 0 {
+            return Self {
+                data: vec![],
+                salt,
+                depth: 0,
+                leaf_count: 0,
+            };
         }
-
-        let n = self.data.len();
         let depth = (n as f64).log2().ceil() as usize;
         let tree_size = (1 << (depth + 1)) - 1;
 
@@ -330,7 +351,7 @@ impl HashArray {
 
         // Copy data to leaves (rightmost part of the tree)
         let leaf_start = (1 << depth) - 1;
-        tree_data[leaf_start..leaf_start + n].copy_from_slice(&self.data[..n]);
+        tree_data[leaf_start..leaf_start + n].copy_from_slice(&data[..n]);
 
         // Build tree from bottom up
         for level in (0..depth).rev() {
@@ -342,37 +363,14 @@ impl HashArray {
                 let left_child_idx = child_level_start + 2 * i;
                 let right_child_idx = child_level_start + 2 * i + 1;
 
-                let mut hasher = Sha512::new();
-                hasher.update(&tree_data[left_child_idx].to_bytes());
-                hasher.update(&tree_data[right_child_idx].to_bytes());
-                let result = hasher.finalize();
-
-                tree_data[parent_idx] = Hash512::from_bytes(&result).unwrap();
+                tree_data[parent_idx] = hash512(tree_data[left_child_idx], tree_data[right_child_idx]);
             }
         }
-
-        MerkleTree {
+        Self {
             data: tree_data,
+            salt,
             depth,
             leaf_count: n,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct MerkleTree {
-    pub data: Vec<Hash512>,
-    pub depth: usize,
-    pub leaf_count: usize,
-}
-
-impl MerkleTree {
-    pub fn new(depth: usize) -> Self {
-        let size = if depth == 0 { 0 } else { (1 << (depth + 1)) - 1 };
-        Self {
-            data: vec![[0u64; 8]; size],
-            depth,
-            leaf_count: 0,
         }
     }
 
@@ -381,12 +379,14 @@ impl MerkleTree {
             return None;
         }
 
+        let salted_hash = hash512(*hash, self.salt);
+
         // Find the hash in the leaves
         let leaf_start = (1 << self.depth) - 1;
         let mut hash_idx = None;
 
         for i in 0..self.leaf_count {
-            if self.data[leaf_start + i] == *hash {
+            if self.data[leaf_start + i] == salted_hash {
                 hash_idx = Some(i);
                 break;
             }
@@ -395,7 +395,8 @@ impl MerkleTree {
         let hash_idx = hash_idx?;
 
         // Generate proof path from leaf to root
-        let mut proof = Vec::new();
+        let mut proof = Vec::with_capacity(self.depth);
+        proof.push((*hash, self.salt.clone()));
         let mut current_idx = hash_idx;
 
         for level in (0..self.depth).rev() {
@@ -435,16 +436,17 @@ pub struct TimestampingService<const INDEX_SIZE: usize, const PREFIX_SIZE: usize
 
 impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDEX_SIZE, PREFIX_SIZE> {
     pub fn with_threads(num_threads: usize) -> Self {
+        let salt = [rand::random(), rand::random(), rand::random(), rand::random(),
+                    rand::random(), rand::random(), rand::random(), rand::random()];
         Self {
-            hash_store: Arc::new(MultiThreadedHashStore::new(num_threads)),
+            hash_store: Arc::new(MultiThreadedHashStore::new(num_threads, salt)),
             merkle_tree: Arc::new(RwLock::new(None)),
             last_tree_update: Arc::new(RwLock::new(None)),
         }
     }
 
     pub fn update_merkle_tree(&self) {
-        let hash_array = self.hash_store.to_array();
-        let new_tree = hash_array.to_merkle_tree();
+        let new_tree = MerkleTree::new(self.hash_store.to_array(), self.hash_store.salt);
 
         *self.merkle_tree.write().unwrap() = Some(new_tree);
         *self.last_tree_update.write().unwrap() = Some(SystemTime::now());
@@ -496,6 +498,7 @@ impl<const INDEX_SIZE: usize, const PREFIX_SIZE: usize> TimestampingService<INDE
 mod tests {
     use super::*;
     use std::time::Duration;
+    static SALT: Hash512 = [0, 0, 0, 0, 0, 0, 0, 0];
 
     #[test]
     fn test_hash512_byte_conversion() {
@@ -532,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_hash_store_basic_operations() {
-        let store = HashStore::<8, 0>::new();
+        let store = HashStore::<8, 0>::new(SALT);
 
         // Test empty store
         assert_eq!(store.len(), 0);
@@ -557,41 +560,26 @@ mod tests {
         assert!(store.add_hash(hash2));
         assert_eq!(store.len(), 2);
         assert_eq!(store.occupied_slots(), 2);
-
-        // Test adding very similar hash (that gets added to the same bucket)
-        let hash3 = [u64::MAX, 10u64, 11u64, 12u64, 13u64, 14u64, 15u64, 15u64];
-        assert!(store.add_hash(hash3));
-        assert_eq!(store.len(), 3);
-        assert_eq!(store.occupied_slots(), 2);
     }
 
     #[test]
     fn test_hash_store_ordering() {
-        let store = HashStore::<8, 0>::new();
+        let store = HashStore::<8, 0>::new(SALT);
 
-        let hash1 = [1u64, 0, 0, 0, 0, 0, 0, 0];
-        let hash2 = [2u64, 0, 0, 0, 0, 0, 0, 0];
-        let hash3 = [3u64, 0, 0, 0, 0, 0, 0, 0];
-        let hash4 = [u64::MAX, 0, 0, 0, 0, 0, 0, 0];
+        for i in 0..10 {
+            let hash = [i as u64, 0, 0, 0, 0, 0, 0, 0];
+            store.add_hash(hash);
+        }
 
-        // Add in reverse order
-        store.add_hash(hash3);
-        store.add_hash(hash1);
-        store.add_hash(hash4);
-        store.add_hash(hash2);
-
-        let array = store.to_array();
-        assert_eq!(array.data.len(), 4);
-        // Should be sorted
-        assert_eq!(array.data[0], hash1);
-        assert_eq!(array.data[1], hash2);
-        assert_eq!(array.data[2], hash3);
-        assert_eq!(array.data[3], hash4);
+        assert_eq!(store.to_array().len(), 10);
+        let mut array = store.to_array();
+        array.sort_by(|a, b| a[0].cmp(&b[0]));
+        assert_eq!(array, store.to_array());
     }
 
     #[test]
     fn test_multi_threaded_hash_store() {
-        let store = MultiThreadedHashStore::<8, 0>::new(4);
+        let store = MultiThreadedHashStore::<8, 0>::new(4, SALT);
 
         // Test empty store
         assert_eq!(store.len(), 0);
@@ -621,16 +609,14 @@ mod tests {
 
     #[test]
     fn test_merkle_tree_basic() {
-        let array = HashArray {
-            data: vec![
-                [1u64, 0, 0, 0, 0, 0, 0, 0],
-                [2u64, 0, 0, 0, 0, 0, 0, 0],
-                [3u64, 0, 0, 0, 0, 0, 0, 0],
-                [4u64, 0, 0, 0, 0, 0, 0, 0],
-            ]
-        };
+        let array = vec![
+            [1u64, 0, 0, 0, 0, 0, 0, 0],
+            [2u64, 0, 0, 0, 0, 0, 0, 0],
+            [3u64, 0, 0, 0, 0, 0, 0, 0],
+            [4u64, 0, 0, 0, 0, 0, 0, 0],
+        ];
 
-        let tree = array.to_merkle_tree();
+        let tree = MerkleTree::new(array, SALT);
 
         assert_eq!(tree.leaf_count, 4);
         assert_eq!(tree.depth, 2);
@@ -640,8 +626,8 @@ mod tests {
 
     #[test]
     fn test_merkle_tree_empty() {
-        let array = HashArray { data: vec![] };
-        let tree = array.to_merkle_tree();
+        let array = vec![];
+        let tree = MerkleTree::new(array, SALT);
 
         assert_eq!(tree.leaf_count, 0);
         assert_eq!(tree.depth, 0);
@@ -652,8 +638,8 @@ mod tests {
     #[test]
     fn test_merkle_tree_single_element() {
         let hash = [1u64, 0, 0, 0, 0, 0, 0, 0];
-        let array = HashArray { data: vec![hash] };
-        let tree = array.to_merkle_tree();
+        let array = vec![hash];
+        let tree = MerkleTree::new(array, SALT);
 
         assert_eq!(tree.leaf_count, 1);
         assert_eq!(tree.depth, 0);
@@ -670,8 +656,8 @@ mod tests {
             [4u64, 0, 0, 0, 0, 0, 0, 0],
         ];
 
-        let array = HashArray { data: hashes.clone() };
-        let tree = array.to_merkle_tree();
+        let salted_hashes = hashes.iter().map(|hash| hash512(*hash, SALT)).collect();
+        let tree = MerkleTree::new(salted_hashes, SALT);
 
         // Test proof for first hash
         let proof = tree.get(&hashes[0]);
@@ -722,23 +708,19 @@ mod tests {
 
     #[test]
     fn test_hash_store_collision_handling() {
-        let store = HashStore::<2, 0>::new(); // Only 4 buckets
+        let store = HashStore::<2, 0>::new(SALT); // Only 4 buckets
 
-        // Create hashes that will collide in the same bucket
-        let hash1 = [1u64, 0, 0, 0, 0, 0, 0, 0];
-        let hash2 = [5u64, 0, 0, 0, 0, 0, 0, 0]; // Same index as hash1
-        let hash3 = [9u64, 0, 0, 0, 0, 0, 0, 0]; // Same index as hash1
+        // Create hashes where some will collide in the same bucket
+        for i in 0..10 {
+            let hash = [i as u64, 0, 0, 0, 0, 0, 0, 0];
+            store.add_hash(hash);
+        }
 
-        store.add_hash(hash1);
-        store.add_hash(hash2);
-        store.add_hash(hash3);
-
-        assert_eq!(store.len(), 3);
-        assert_eq!(store.occupied_slots(), 1); // Only one bucket used
-
-        assert!(store.contains(&hash1));
-        assert!(store.contains(&hash2));
-        assert!(store.contains(&hash3));
+        assert_eq!(store.len(), 10);
+        for i in 0..10 {
+            let hash = [i as u64, 0, 0, 0, 0, 0, 0, 0];
+            assert!(store.contains(&hash));
+        }
     }
 
     #[test]
@@ -768,9 +750,9 @@ mod tests {
         for i in 0..100 {
             hashes.push([i as u64, 0, 0, 0, 0, 0, 0, 0]);
         }
+        let salted_hashes = hashes.iter().map(|hash| hash512(*hash, SALT)).collect();
 
-        let array = HashArray { data: hashes.clone() };
-        let tree = array.to_merkle_tree();
+        let tree = MerkleTree::new(salted_hashes, SALT);
 
         assert_eq!(tree.leaf_count, 100);
         assert!(tree.root().is_some());
@@ -782,7 +764,7 @@ mod tests {
 
     #[test]
     fn test_multi_threaded_hash_store_concurrent_access() {
-        let store = Arc::new(MultiThreadedHashStore::<8, 0>::new(4));
+        let store = Arc::new(MultiThreadedHashStore::<8, 0>::new(4, SALT));
         let mut handles = Vec::new();
 
         // Spawn multiple threads adding hashes concurrently
